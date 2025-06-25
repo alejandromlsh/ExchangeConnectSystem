@@ -1,12 +1,16 @@
 #pragma once
+
 #include "memory_mapper.hpp"
 #include "types.hpp"
-#include <chrono>
-#include <functional>
-#include <arpa/inet.h>
-#include <iostream>  
 
-#include <iomanip> 
+#include <iostream>
+#include <functional>
+#include <chrono>
+#include <string>
+#include <array>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
 namespace pcap {
 
 class PcapParser {
@@ -20,7 +24,7 @@ private:
     
     // Callback for packet processing
     std::function<void(const PacketInfo&)> packet_callback_;
-    
+
 public:
     explicit PcapParser(const std::string& filename);
     
@@ -43,36 +47,40 @@ public:
     
     // Reset parser to beginning
     void reset();
-
+    
     static std::string ip_to_string(uint32_t ip);
     static std::string mac_to_string(const std::array<uint8_t, 6>& mac);
-    
+
 private:
     bool validate_pcap_header();
     bool parse_ethernet_packet(const PcapPacketHeader& pkt_header, PacketInfo& packet_info);
     bool parse_ip_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
     bool parse_tcp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
     bool parse_udp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
-    
     // Utility methods
-
 };
 
 // Implementation
-inline PcapParser::PcapParser(const std::string& filename) 
+inline PcapParser::PcapParser(const std::string& filename)
     : mapper_(filename), current_offset_(0), header_validated_(false), is_nanosecond_format_(false) {
     start_time_ = std::chrono::high_resolution_clock::now();
 }
 
 inline bool PcapParser::parse_all() {
+#ifdef DEBUG
     std::cout << "File size: " << mapper_.size() << " bytes" << std::endl;
+#endif
     
     if (!validate_pcap_header()) {
+#ifdef DEBUG
         std::cerr << "Failed to validate PCAP header" << std::endl;
+#endif
         return false;
     }
     
+#ifdef DEBUG
     std::cout << "PCAP header validated successfully" << std::endl;
+#endif
     
     PacketInfo packet_info;
     while (has_more_data()) {
@@ -81,8 +89,10 @@ inline bool PcapParser::parse_all() {
                 packet_callback_(packet_info);
             }
         } else {
+#ifdef DEBUG
             // Add debug output for parsing failures
             std::cerr << "Failed to parse packet at offset: " << current_offset_ << std::endl;
+#endif
             break;
         }
     }
@@ -93,7 +103,6 @@ inline bool PcapParser::parse_all() {
     
     return true;
 }
-
 
 inline bool PcapParser::parse_next_packet(PacketInfo& packet_info) {
     if (!header_validated_ && !validate_pcap_header()) {
@@ -149,50 +158,44 @@ inline bool PcapParser::validate_pcap_header() {
     
     // Standard microsecond PCAP formats
     bool is_microsecond = (magic == 0xA1B2C3D4 || magic == 0xD4C3B2A1);
-    
-    // Nanosecond PCAP formats  
+    // Nanosecond PCAP formats
     bool is_nanosecond = (magic == 0xA1B23C4D || magic == 0x4D3CB2A1);
     
     if (!is_microsecond && !is_nanosecond) {
+#ifdef DEBUG
         std::cerr << "Invalid PCAP magic number: 0x" << std::hex << magic << std::dec << std::endl;
+#endif
         return false;
     }
     
     // Store whether this is nanosecond format for timestamp conversion
     is_nanosecond_format_ = is_nanosecond;
     
+#ifdef DEBUG
     std::cout << "PCAP format detected: " << (is_nanosecond ? "nanosecond" : "microsecond") << std::endl;
+#endif
     
     current_offset_ = sizeof(PcapFileHeader);
     header_validated_ = true;
     return true;
 }
 
-
 inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header, PacketInfo& packet_info) {
     size_t packet_start = current_offset_;
     
     // Initialize packet info
     packet_info = {};
-
-
-
-
+    
     // Handle timestamp conversion based on format
     if (is_nanosecond_format_) {
         // For nanosecond format, ts_usec field actually contains nanoseconds
-        packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL + 
-                                  (pkt_header.ts_usec / 1000);  // Convert nanoseconds to microseconds
+        packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL +
+                                   (pkt_header.ts_usec / 1000); // Convert nanoseconds to microseconds
     } else {
         // Standard microsecond format
         packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL + pkt_header.ts_usec;
     }
-
-
-
-
-
-
+    
     packet_info.packet_length = pkt_header.len;
     packet_info.captured_length = pkt_header.caplen;
     
@@ -215,7 +218,6 @@ inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header
     if (packet_info.ethertype == 0x0800) { // IPv4
         size_t remaining_size = packet_start + pkt_header.caplen - current_offset_;
         const uint8_t* ip_data = mapper_.data() + current_offset_;
-        
         if (parse_ip_packet(ip_data, remaining_size, packet_info)) {
             stats_.ip_packets++;
         }
