@@ -1,17 +1,18 @@
 #pragma once
-
 #include "memory_mapper.hpp"
 #include "types.hpp"
-
-#include <iostream>
-#include <functional>
 #include <chrono>
-#include <string>
-#include <array>
+#include <functional>
 #include <arpa/inet.h>
-#include <netinet/in.h>
+#include <iostream>
+#include <iomanip>
+#include <cstring>
+#include "../utils/thread_safe_queue.hpp" 
 
 namespace pcap {
+
+// Forward declaration for queue
+template<typename T> class ThreadSafeQueue;
 
 class PcapParser {
 private:
@@ -24,6 +25,9 @@ private:
     
     // Callback for packet processing
     std::function<void(const PacketInfo&)> packet_callback_;
+    
+    // Queue for pipeline processing (optional)
+    ThreadSafeQueue<PacketInfo>* output_queue_;
 
 public:
     explicit PcapParser(const std::string& filename);
@@ -31,6 +35,11 @@ public:
     // Set callback for packet processing
     void set_packet_callback(std::function<void(const PacketInfo&)> callback) {
         packet_callback_ = std::move(callback);
+    }
+    
+    // Set output queue for pipeline processing
+    void set_output_queue(ThreadSafeQueue<PacketInfo>* queue) {
+        output_queue_ = queue;
     }
     
     // Parse all packets
@@ -57,12 +66,12 @@ private:
     bool parse_ip_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
     bool parse_tcp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
     bool parse_udp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
-    // Utility methods
 };
 
 // Implementation
-inline PcapParser::PcapParser(const std::string& filename)
-    : mapper_(filename), current_offset_(0), header_validated_(false), is_nanosecond_format_(false) {
+inline PcapParser::PcapParser(const std::string& filename) 
+    : mapper_(filename), current_offset_(0), header_validated_(false), 
+      is_nanosecond_format_(false), output_queue_(nullptr) {
     start_time_ = std::chrono::high_resolution_clock::now();
 }
 
@@ -85,12 +94,17 @@ inline bool PcapParser::parse_all() {
     PacketInfo packet_info;
     while (has_more_data()) {
         if (parse_next_packet(packet_info)) {
+            // Push to queue if available (move semantics for performance)
+            if (output_queue_) {
+                output_queue_->push(PacketInfo(packet_info));
+            }
+            
+            // Call callback if available
             if (packet_callback_) {
                 packet_callback_(packet_info);
             }
         } else {
 #ifdef DEBUG
-            // Add debug output for parsing failures
             std::cerr << "Failed to parse packet at offset: " << current_offset_ << std::endl;
 #endif
             break;
@@ -158,7 +172,8 @@ inline bool PcapParser::validate_pcap_header() {
     
     // Standard microsecond PCAP formats
     bool is_microsecond = (magic == 0xA1B2C3D4 || magic == 0xD4C3B2A1);
-    // Nanosecond PCAP formats
+    
+    // Nanosecond PCAP formats  
     bool is_nanosecond = (magic == 0xA1B23C4D || magic == 0x4D3CB2A1);
     
     if (!is_microsecond && !is_nanosecond) {
@@ -189,8 +204,8 @@ inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header
     // Handle timestamp conversion based on format
     if (is_nanosecond_format_) {
         // For nanosecond format, ts_usec field actually contains nanoseconds
-        packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL +
-                                   (pkt_header.ts_usec / 1000); // Convert nanoseconds to microseconds
+        packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL + 
+                                  (pkt_header.ts_usec / 1000);  // Convert nanoseconds to microseconds
     } else {
         // Standard microsecond format
         packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL + pkt_header.ts_usec;
@@ -218,6 +233,7 @@ inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header
     if (packet_info.ethertype == 0x0800) { // IPv4
         size_t remaining_size = packet_start + pkt_header.caplen - current_offset_;
         const uint8_t* ip_data = mapper_.data() + current_offset_;
+        
         if (parse_ip_packet(ip_data, remaining_size, packet_info)) {
             stats_.ip_packets++;
         }
