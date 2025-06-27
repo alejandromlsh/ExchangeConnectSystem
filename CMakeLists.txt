@@ -1,27 +1,39 @@
 cmake_minimum_required(VERSION 3.16)
-project(pcap_parser VERSION 1.0.0 LANGUAGES CXX)
+project(pcap_simba_decoder VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Optimization flags for production (performance testing)
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG -flto")
-set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -fsanitize=address -DDEBUG")
+find_package(Threads REQUIRED)
+
+# HFT optimization flags
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -DNDEBUG -flto -ffast-math")
+set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -DDEBUG")
 
 # Include directories
 include_directories(include)
 
-# Main executable (release/performance version)
-add_executable(pcap_parser src/main.cpp)
+# Task 1: Original PCAP Parser
+add_executable(pcap_parser 
+    src/main.cpp
+)
 target_compile_options(pcap_parser PRIVATE -O3 -march=native -DNDEBUG -flto)
 
-# Debug executable (with debug output)
-add_executable(pcap_parser_debug src/main.cpp)
-target_compile_options(pcap_parser_debug PRIVATE -O0 -g -DDEBUG)
+# Task 1+2+3: Complete SIMBA pipeline (integrated)
+add_executable(pcap_pipeline 
+    src/main_pipeline.cpp
+)
+target_compile_options(pcap_pipeline PRIVATE -O3 -march=native -DNDEBUG -flto -ffast-math)
+target_link_libraries(pcap_pipeline PRIVATE Threads::Threads)
 
-# Test executable
-add_executable(test_pcap src/test/test_pcap.cpp)
+# Debug version
+add_executable(pcap_pipeline_debug 
+    src/main_pipeline.cpp
+)
+target_compile_options(pcap_pipeline_debug PRIVATE -O0 -g -DDEBUG)
+target_link_libraries(pcap_pipeline_debug PRIVATE Threads::Threads)
 
-# Installation
-install(TARGETS pcap_parser DESTINATION bin)
-install(TARGETS pcap_parser_debug DESTINATION bin)
+# Set default build type
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
