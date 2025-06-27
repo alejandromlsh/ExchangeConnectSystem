@@ -6,11 +6,6 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
-#include <set>
-
-bool is_simba_port(uint16_t port) {
-    return port >= 20080 && port <= 20090;
-}
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
@@ -19,22 +14,29 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        // Create thread-safe queues for the pipeline
-        pcap::ThreadSafeQueue<pcap::PacketInfo> packet_queue;
-        pcap::ThreadSafeQueue<simba::DecodedMessage> decoded_queue;
+        // Clean 3-thread pipeline with proper queues matching your decoder
+        pcap::ThreadSafeQueue<pcap::PacketInfo> packet_queue;           // Queue 1: Raw packets
+        pcap::ThreadSafeQueue<simba::OrderUpdate> order_update_queue;   // Queue 2a: OrderUpdate messages
+        pcap::ThreadSafeQueue<simba::OrderExecution> order_execution_queue; // Queue 2b: OrderExecution messages  
+        pcap::ThreadSafeQueue<simba::OrderBookSnapshot> snapshot_queue; // Queue 2c: OrderBookSnapshot messages
         
         pcap::PcapParser parser(argv[1]);
         std::atomic<bool> parsing_complete{false};
         std::atomic<bool> decoding_complete{false};
-        
-        size_t processed_count = 0;
-        size_t simba_candidates = 0;
 
-        // Create components with clear separation of concerns
-        simba::SimbaDecoder decoder(packet_queue, decoded_queue, parsing_complete);
-        output::JsonOutputWriter json_writer(decoded_queue, decoding_complete, argv[2]);
+        // Create components matching your actual class constructors
+        simba::SimbaDecoder decoder(packet_queue, order_update_queue, 
+                                   order_execution_queue, snapshot_queue, parsing_complete);
+        output::JsonOutputWriter json_writer(order_update_queue, order_execution_queue, 
+                                            snapshot_queue, decoding_complete, argv[2]);
 
-        // SIMBA decoder thread
+        // THREAD 1: PCAP Parser (runs in main thread)
+        // This callback pushes packets to Queue 1
+        parser.set_packet_callback([&packet_queue](const pcap::PacketInfo& packet) {
+            packet_queue.push(packet);
+        });
+
+        // THREAD 2: SIMBA Decoder (Queue 1 → Queue 2a/2b/2c)
         std::thread decoder_thread([&decoder, &decoding_complete]() {
             std::cout << "SIMBA decoder thread started..." << std::endl;
             decoder.run();
@@ -42,49 +44,15 @@ int main(int argc, char* argv[]) {
             std::cout << "SIMBA decoder thread finished." << std::endl;
         });
 
-        // JSON writer thread
+        // THREAD 3: JSON Writer (Queue 2a/2b/2c → File)
         std::thread json_writer_thread([&json_writer]() {
             std::cout << "JSON writer thread started..." << std::endl;
             json_writer.run();
             std::cout << "JSON writer thread finished." << std::endl;
         });
 
-        // Packet analysis thread
-        std::thread analysis_thread([&]() {
-            std::cout << "Analysis thread started..." << std::endl;
-            std::set<uint16_t> seen_ports;
-            
-            while (!parsing_complete.load(std::memory_order_acquire) || 
-                   !packet_queue.empty()) {
-                auto packet_opt = packet_queue.try_pop();
-                if (packet_opt) {
-                    const auto& packet = *packet_opt;
-                    processed_count++;
-
-                    if (packet.has_transport && !packet.is_tcp && packet.payload_size > 0) {
-                        if (seen_ports.insert(packet.dest_port).second && seen_ports.size() <= 20) {
-                            std::cout << "Found UDP port: " << packet.dest_port
-                                     << " (payload size: " << packet.payload_size << ")" << std::endl;
-                        }
-
-                        if (is_simba_port(packet.dest_port)) {
-                            simba_candidates++;
-                        }
-                    }
-                } else {
-                    std::this_thread::sleep_for(std::chrono::microseconds(50));
-                }
-            }
-            std::cout << "Analysis thread finished." << std::endl;
-        });
-
-        // Set callback to push packets to queue
-        parser.set_packet_callback([&packet_queue](const pcap::PacketInfo& packet) {
-            packet_queue.push(packet);
-        });
-
-        // Parse all packets
-        std::cout << "Starting PCAP parsing with SIMBA decoding pipeline..." << std::endl;
+        // Start parsing (Thread 1 - main thread)
+        std::cout << "Starting clean 3-thread PCAP→SIMBA→JSON pipeline..." << std::endl;
         auto start_time = std::chrono::high_resolution_clock::now();
         
         bool success = parser.parse_all();
@@ -92,8 +60,7 @@ int main(int argc, char* argv[]) {
         
         auto end_time = std::chrono::high_resolution_clock::now();
 
-        // Wait for all threads to complete
-        analysis_thread.join();
+        // Wait for pipeline to complete
         decoder_thread.join();
         json_writer_thread.join();
 
@@ -101,10 +68,9 @@ int main(int argc, char* argv[]) {
             auto duration = std::chrono::duration<double, std::milli>(end_time - start_time);
             const auto& stats = parser.get_stats();
 
-            std::cout << "\n=== FIXED PCAP + SIMBA PIPELINE STATISTICS ===" << std::endl;
+            std::cout << "\n=== CLEAN 3-THREAD PIPELINE STATISTICS ===" << std::endl;
             std::cout << "Total packets: " << stats.total_packets << std::endl;
-            std::cout << "Processed: " << processed_count << std::endl;
-            std::cout << "SIMBA candidates: " << simba_candidates << std::endl;
+            std::cout << "Processed packets: " << decoder.get_processed_packets() << std::endl;
             std::cout << "Decoded messages: " << decoder.get_decoded_messages() << std::endl;
             std::cout << "JSON messages written: " << json_writer.get_messages_written() << std::endl;
             std::cout << "Decode errors: " << decoder.get_decode_errors() << std::endl;
@@ -112,6 +78,8 @@ int main(int argc, char* argv[]) {
             std::cout << "Parse time: " << duration.count() << " ms" << std::endl;
             std::cout << "Throughput: " << (stats.total_packets / duration.count() * 1000.0) 
                      << " packets/sec" << std::endl;
+            std::cout << "Decoding rate: " << (decoder.get_decoded_messages() / duration.count() * 1000.0)
+                     << " messages/sec" << std::endl;
         }
 
     } catch (const std::exception& e) {

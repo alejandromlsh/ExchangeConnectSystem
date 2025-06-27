@@ -11,10 +11,12 @@
 
 namespace output {
 
-// Simple JSON writer that works with existing ThreadSafeQueue
+// JSON writer that handles all three message types
 class JsonOutputWriter {
 private:
-    pcap::ThreadSafeQueue<simba::DecodedMessage>& message_queue_;
+    pcap::ThreadSafeQueue<simba::OrderUpdate>& order_update_queue_;
+    pcap::ThreadSafeQueue<simba::OrderExecution>& order_execution_queue_;
+    pcap::ThreadSafeQueue<simba::OrderBookSnapshot>& snapshot_queue_;
     std::atomic<bool>& decoding_complete_;
     std::atomic<bool> should_stop_;
     
@@ -27,10 +29,15 @@ private:
     bool first_message_;
 
 public:
-    explicit JsonOutputWriter(pcap::ThreadSafeQueue<simba::DecodedMessage>& queue,
+    explicit JsonOutputWriter(pcap::ThreadSafeQueue<simba::OrderUpdate>& order_update_queue,
+                             pcap::ThreadSafeQueue<simba::OrderExecution>& order_execution_queue,
+                             pcap::ThreadSafeQueue<simba::OrderBookSnapshot>& snapshot_queue,
                              std::atomic<bool>& decoding_complete,
                              const std::string& output_filename)
-        : message_queue_(queue), decoding_complete_(decoding_complete),
+        : order_update_queue_(order_update_queue),
+          order_execution_queue_(order_execution_queue),
+          snapshot_queue_(snapshot_queue),
+          decoding_complete_(decoding_complete),
           should_stop_(false), messages_written_(0), write_errors_(0),
           first_message_(true) {
         
@@ -60,13 +67,35 @@ public:
         
         while (!should_stop_.load(std::memory_order_acquire) &&
                (!decoding_complete_.load(std::memory_order_acquire) || 
-                !message_queue_.empty())) {
+                !all_queues_empty())) {
             
-            auto msg_opt = message_queue_.try_pop();
-            if (msg_opt) [[likely]] {
-                serialize_message(*msg_opt);
+            bool processed_any = false;
+            
+            // Process OrderUpdate messages
+            auto order_update_opt = order_update_queue_.try_pop();
+            if (order_update_opt) {
+                serialize_order_update(*order_update_opt);
                 messages_written_.fetch_add(1, std::memory_order_relaxed);
-            } else [[unlikely]] {
+                processed_any = true;
+            }
+            
+            // Process OrderExecution messages
+            auto order_execution_opt = order_execution_queue_.try_pop();
+            if (order_execution_opt) {
+                serialize_order_execution(*order_execution_opt);
+                messages_written_.fetch_add(1, std::memory_order_relaxed);
+                processed_any = true;
+            }
+            
+            // Process OrderBookSnapshot messages
+            auto snapshot_opt = snapshot_queue_.try_pop();
+            if (snapshot_opt) {
+                serialize_order_book_snapshot(*snapshot_opt);
+                messages_written_.fetch_add(1, std::memory_order_relaxed);
+                processed_any = true;
+            }
+            
+            if (!processed_any) {
                 std::this_thread::sleep_for(sleep_duration);
             }
         }
@@ -83,21 +112,90 @@ public:
     }
 
 private:
-    void serialize_message(const simba::DecodedMessage& msg) noexcept {
+    bool all_queues_empty() const noexcept {
+        return order_update_queue_.empty() && 
+               order_execution_queue_.empty() && 
+               snapshot_queue_.empty();
+    }
+
+    void write_message_header() {
+        if (!first_message_) {
+            output_file_ << ",\n";
+        } else {
+            first_message_ = false;
+        }
+    }
+
+    void serialize_order_update(const simba::OrderUpdate& msg) noexcept {
         try {
-            if (!first_message_) {
-                output_file_ << ",\n";
-            } else {
-                first_message_ = false;
-            }
+            write_message_header();
             
             output_file_ << "  {\n";
+            output_file_ << "    \"type\": \"OrderUpdate\",\n";
             output_file_ << "    \"timestamp_us\": " << msg.timestamp_us << ",\n";
             output_file_ << "    \"src_ip\": \"" << format_ip(msg.src_ip) << "\",\n";
             output_file_ << "    \"dest_ip\": \"" << format_ip(msg.dest_ip) << "\",\n";
             output_file_ << "    \"src_port\": " << msg.src_port << ",\n";
             output_file_ << "    \"dest_port\": " << msg.dest_port << ",\n";
-            output_file_ << "    \"type\": \"" << get_message_type_string(msg.type) << "\"\n";
+            output_file_ << "    \"msg_seq_num\": " << msg.msg_seq_num << ",\n";
+            output_file_ << "    \"sending_time\": " << msg.sending_time << ",\n";
+            output_file_ << "    \"security_id\": " << msg.security_id << ",\n";
+            output_file_ << "    \"order_id\": " << msg.order_id << ",\n";
+            output_file_ << "    \"price\": " << msg.price << ",\n";
+            output_file_ << "    \"order_qty\": " << msg.order_qty << ",\n";
+            output_file_ << "    \"side\": " << static_cast<int>(msg.side) << ",\n";
+            output_file_ << "    \"ord_type\": " << static_cast<int>(msg.ord_type) << "\n";
+            output_file_ << "  }";
+            
+        } catch (...) {
+            write_errors_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    
+    void serialize_order_execution(const simba::OrderExecution& msg) noexcept {
+        try {
+            write_message_header();
+            
+            output_file_ << "  {\n";
+            output_file_ << "    \"type\": \"OrderExecution\",\n";
+            output_file_ << "    \"timestamp_us\": " << msg.timestamp_us << ",\n";
+            output_file_ << "    \"src_ip\": \"" << format_ip(msg.src_ip) << "\",\n";
+            output_file_ << "    \"dest_ip\": \"" << format_ip(msg.dest_ip) << "\",\n";
+            output_file_ << "    \"src_port\": " << msg.src_port << ",\n";
+            output_file_ << "    \"dest_port\": " << msg.dest_port << ",\n";
+            output_file_ << "    \"msg_seq_num\": " << msg.msg_seq_num << ",\n";
+            output_file_ << "    \"sending_time\": " << msg.sending_time << ",\n";
+            output_file_ << "    \"security_id\": " << msg.security_id << ",\n";
+            output_file_ << "    \"order_id\": " << msg.order_id << ",\n";
+            output_file_ << "    \"exec_id\": " << msg.exec_id << ",\n";
+            output_file_ << "    \"last_px\": " << msg.last_px << ",\n";
+            output_file_ << "    \"last_qty\": " << msg.last_qty << ",\n";
+            output_file_ << "    \"side\": " << static_cast<int>(msg.side) << ",\n";
+            output_file_ << "    \"exec_type\": " << static_cast<int>(msg.exec_type) << "\n";
+            output_file_ << "  }";
+            
+        } catch (...) {
+            write_errors_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    
+    void serialize_order_book_snapshot(const simba::OrderBookSnapshot& msg) noexcept {
+        try {
+            write_message_header();
+            
+            output_file_ << "  {\n";
+            output_file_ << "    \"type\": \"OrderBookSnapshot\",\n";
+            output_file_ << "    \"timestamp_us\": " << msg.timestamp_us << ",\n";
+            output_file_ << "    \"src_ip\": \"" << format_ip(msg.src_ip) << "\",\n";
+            output_file_ << "    \"dest_ip\": \"" << format_ip(msg.dest_ip) << "\",\n";
+            output_file_ << "    \"src_port\": " << msg.src_port << ",\n";
+            output_file_ << "    \"dest_port\": " << msg.dest_port << ",\n";
+            output_file_ << "    \"msg_seq_num\": " << msg.msg_seq_num << ",\n";
+            output_file_ << "    \"sending_time\": " << msg.sending_time << ",\n";
+            output_file_ << "    \"security_id\": " << msg.security_id << ",\n";
+            output_file_ << "    \"last_msg_seq_num_processed\": " << msg.last_msg_seq_num_processed << ",\n";
+            output_file_ << "    \"rpt_seq\": " << msg.rpt_seq << ",\n";
+            output_file_ << "    \"no_md_entries\": " << static_cast<int>(msg.no_md_entries) << "\n";
             output_file_ << "  }";
             
         } catch (...) {
@@ -110,15 +208,6 @@ private:
                std::to_string((ip >> 16) & 0xFF) + "." +
                std::to_string((ip >> 8) & 0xFF) + "." +
                std::to_string(ip & 0xFF);
-    }
-    
-    static const char* get_message_type_string(simba::MessageType type) noexcept {
-        switch (type) {
-            case simba::MessageType::ORDER_UPDATE: return "OrderUpdate";
-            case simba::MessageType::ORDER_EXECUTION: return "OrderExecution";
-            case simba::MessageType::ORDER_BOOK_SNAPSHOT: return "OrderBookSnapshot";
-            default: return "Unknown";
-        }
     }
 };
 

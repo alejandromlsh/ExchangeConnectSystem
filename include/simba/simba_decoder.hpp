@@ -11,11 +11,13 @@
 
 namespace simba {
 
-// High-performance SIMBA decoder with separation of concerns
+// High-performance SIMBA decoder with separate queues for each message type
 class SimbaDecoder {
 private:
     pcap::ThreadSafeQueue<pcap::PacketInfo>& input_queue_;
-    pcap::ThreadSafeQueue<DecodedMessage>& output_queue_;
+    pcap::ThreadSafeQueue<OrderUpdate>& order_update_queue_;
+    pcap::ThreadSafeQueue<OrderExecution>& order_execution_queue_;
+    pcap::ThreadSafeQueue<OrderBookSnapshot>& snapshot_queue_;
     std::atomic<bool>& parsing_complete_;
     std::atomic<bool> should_stop_;
     
@@ -23,22 +25,31 @@ private:
     alignas(64) std::atomic<uint64_t> processed_packets_;
     alignas(64) std::atomic<uint64_t> decoded_messages_;
     alignas(64) std::atomic<uint64_t> decode_errors_;
-    
-    // Pre-allocated message buffer to avoid allocations in hot path
-    DecodedMessage msg_buffer_;
 
 public:
     explicit SimbaDecoder(pcap::ThreadSafeQueue<pcap::PacketInfo>& input_queue,
-                         pcap::ThreadSafeQueue<DecodedMessage>& output_queue,
+                         pcap::ThreadSafeQueue<OrderUpdate>& order_update_queue,
+                         pcap::ThreadSafeQueue<OrderExecution>& order_execution_queue,
+                         pcap::ThreadSafeQueue<OrderBookSnapshot>& snapshot_queue,
                          std::atomic<bool>& parsing_complete) noexcept
-        : input_queue_(input_queue), output_queue_(output_queue),
+        : input_queue_(input_queue), 
+          order_update_queue_(order_update_queue),
+          order_execution_queue_(order_execution_queue),
+          snapshot_queue_(snapshot_queue),
           parsing_complete_(parsing_complete), should_stop_(false),
           processed_packets_(0), decoded_messages_(0), decode_errors_(0) {}
+
+    // Non-copyable, non-movable for thread safety
+    SimbaDecoder(const SimbaDecoder&) = delete;
+    SimbaDecoder& operator=(const SimbaDecoder&) = delete;
+    SimbaDecoder(SimbaDecoder&&) = delete;
+    SimbaDecoder& operator=(SimbaDecoder&&) = delete;
 
     void stop() noexcept { 
         should_stop_.store(true, std::memory_order_release); 
     }
 
+    // Main processing loop - optimized for minimal latency
     void run() noexcept {
         constexpr auto sleep_duration = std::chrono::microseconds(1);
         
@@ -56,6 +67,7 @@ public:
         }
     }
 
+    // Performance metrics accessors
     [[nodiscard]] uint64_t get_processed_packets() const noexcept {
         return processed_packets_.load(std::memory_order_relaxed);
     }
@@ -69,6 +81,7 @@ public:
     }
 
 private:
+    // Fast packet validation and filtering
     [[nodiscard]] bool is_valid_simba_packet(const pcap::PacketInfo& packet) const noexcept {
         return packet.has_transport &&
                !packet.is_tcp &&
@@ -89,31 +102,38 @@ private:
         }
     }
 
+    // Zero-copy message decoding with direct type-specific queues
     [[nodiscard]] bool decode_simba_message(const pcap::PacketInfo& packet) noexcept {
         const uint8_t* data = packet.payload;
         const size_t remaining = packet.payload_size;
         
+        // Check for Market Data Packet Header first
         if (remaining < sizeof(MarketDataPacketHeader)) [[unlikely]] {
             return false;
         }
 
+        // Skip Market Data Packet Header (16 bytes) - MOEX uses little-endian
         data += sizeof(MarketDataPacketHeader);
         const size_t sbe_remaining = remaining - sizeof(MarketDataPacketHeader);
         
+        // Now check for SBE Header
         if (sbe_remaining < sizeof(SimbaMessageHeader)) [[unlikely]] {
             return false;
         }
 
+        // Read SBE header - MOEX uses LITTLE-ENDIAN
         const auto* header = reinterpret_cast<const SimbaMessageHeader*>(data);
         const uint16_t template_id = header->template_id;
         const uint16_t block_length = header->block_length;
 
+        // Debug output for template ID discovery
         static std::set<uint16_t> seen_templates;
         if (seen_templates.insert(template_id).second && seen_templates.size() <= 10) {
             std::cout << "Found SIMBA template ID: " << template_id
                      << " (block_length: " << block_length << ")" << std::endl;
         }
 
+        // Skip SBE header
         const uint8_t* payload_data = data + sizeof(SimbaMessageHeader);
         const size_t payload_remaining = sbe_remaining - sizeof(SimbaMessageHeader);
         
@@ -121,31 +141,102 @@ private:
             return false;
         }
 
-        msg_buffer_ = DecodedMessage{};
-        msg_buffer_.timestamp_us = packet.timestamp_us;
-        msg_buffer_.src_ip = packet.src_ip;
-        msg_buffer_.dest_ip = packet.dest_ip;
-        msg_buffer_.src_port = packet.src_port;
-        msg_buffer_.dest_port = packet.dest_port;
-
+        // Direct decode to specific types - no union overhead
         switch (template_id) {
-            case 3: case 4: case 5:
-                msg_buffer_.type = MessageType::ORDER_UPDATE;
+            case 3: case 4: case 5: {  // OrderUpdate variants
+                OrderUpdate msg;
+                if (decode_order_update(payload_data, packet, msg)) {
+                    order_update_queue_.push(std::move(msg));
+                    return true;
+                }
                 break;
-            case 6:
-                msg_buffer_.type = MessageType::ORDER_EXECUTION;
+            }
+            case 6: {  // OrderExecution  
+                OrderExecution msg;
+                if (decode_order_execution(payload_data, packet, msg)) {
+                    order_execution_queue_.push(std::move(msg));
+                    return true;
+                }
                 break;
-            case 7:
-                msg_buffer_.type = MessageType::ORDER_BOOK_SNAPSHOT;
+            }
+            case 7: {  // OrderBookSnapshot
+                OrderBookSnapshot msg;
+                if (decode_order_book_snapshot(payload_data, packet, msg)) {
+                    snapshot_queue_.push(std::move(msg));
+                    return true;
+                }
                 break;
-            case 8: case 9: case 11: case 16:
-                msg_buffer_.type = MessageType::ORDER_EXECUTION;
+            }
+            case 8: case 9: case 11: case 16: {  // Other execution types
+                OrderExecution msg;
+                if (decode_order_execution(payload_data, packet, msg)) {
+                    order_execution_queue_.push(std::move(msg));
+                    return true;
+                }
                 break;
+            }
             default:
                 return false;
         }
+        return false;
+    }
 
-        output_queue_.push(std::move(msg_buffer_));
+    // Type-specific decoders - highly optimized, no branching
+    bool decode_order_update(const uint8_t* data, const pcap::PacketInfo& packet, OrderUpdate& msg) noexcept {
+        // Set common network fields
+        msg.timestamp_us = packet.timestamp_us;
+        msg.src_ip = packet.src_ip;
+        msg.dest_ip = packet.dest_ip;
+        msg.src_port = packet.src_port;
+        msg.dest_port = packet.dest_port;
+        
+        // For now, zero-initialize SIMBA fields (you'll implement proper SBE parsing later)
+        msg.msg_seq_num = 0;
+        msg.sending_time = 0;
+        msg.security_id = 0;
+        msg.order_id = 0;
+        msg.price = 0;
+        msg.order_qty = 0;
+        msg.side = 0;
+        msg.ord_type = 0;
+        
+        return true;
+    }
+    
+    bool decode_order_execution(const uint8_t* data, const pcap::PacketInfo& packet, OrderExecution& msg) noexcept {
+        msg.timestamp_us = packet.timestamp_us;
+        msg.src_ip = packet.src_ip;
+        msg.dest_ip = packet.dest_ip;
+        msg.src_port = packet.src_port;
+        msg.dest_port = packet.dest_port;
+        
+        msg.msg_seq_num = 0;
+        msg.sending_time = 0;
+        msg.security_id = 0;
+        msg.order_id = 0;
+        msg.exec_id = 0;
+        msg.last_px = 0;
+        msg.last_qty = 0;
+        msg.side = 0;
+        msg.exec_type = 0;
+        
+        return true;
+    }
+    
+    bool decode_order_book_snapshot(const uint8_t* data, const pcap::PacketInfo& packet, OrderBookSnapshot& msg) noexcept {
+        msg.timestamp_us = packet.timestamp_us;
+        msg.src_ip = packet.src_ip;
+        msg.dest_ip = packet.dest_ip;
+        msg.src_port = packet.src_port;
+        msg.dest_port = packet.dest_port;
+        
+        msg.msg_seq_num = 0;
+        msg.sending_time = 0;
+        msg.security_id = 0;
+        msg.last_msg_seq_num_processed = 0;
+        msg.rpt_seq = 0;
+        msg.no_md_entries = 0;
+        
         return true;
     }
 };
