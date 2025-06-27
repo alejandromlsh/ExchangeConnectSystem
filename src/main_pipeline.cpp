@@ -34,7 +34,7 @@ int main(int argc, char* argv[]) {
 
         // THREAD 1: PCAP Parser with backpressure handling
         parser.set_packet_callback([&packet_queue, &dropped_packets](const pcap::PacketInfo& packet) {
-            if (!packet_queue->try_push(packet)) {
+            if (!packet_queue->try_push(std::move(packet))) {
                 // Handle backpressure - for HFT, prefer dropping to blocking
                 dropped_packets.fetch_add(1, std::memory_order_relaxed);
             }

@@ -10,6 +10,18 @@
 
 namespace pcap {
 
+
+// High-performance inline byte swapping - compiles to single CPU instructions. This will replace the system calls
+inline uint16_t fast_ntohs(uint16_t x) noexcept {
+    return __builtin_bswap16(x);
+}
+
+inline uint32_t fast_ntohl(uint32_t x) noexcept {
+    return __builtin_bswap32(x);
+}
+
+
+
 class PcapParser {
 private:
     MemoryMapper mapper_;
@@ -173,7 +185,8 @@ inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header
     // Extract Ethernet information
     packet_info.src_mac = eth_header->src_mac;
     packet_info.dest_mac = eth_header->dest_mac;
-    packet_info.ethertype = ntohs(eth_header->ethertype);
+    //packet_info.ethertype = ntohs(eth_header->ethertype);
+    packet_info.ethertype = fast_ntohs(eth_header->ethertype);
     
     // Parse IP layer if present
     if (packet_info.ethertype == 0x0800) { // IPv4
@@ -199,8 +212,10 @@ inline bool PcapParser::parse_ip_packet(const uint8_t* data, size_t data_size, P
     
     // Extract IP information
     packet_info.has_ip = true;
-    packet_info.src_ip = ntohl(ip_header->src_ip);
-    packet_info.dest_ip = ntohl(ip_header->dest_ip);
+    // packet_info.src_ip = ntohl(ip_header->src_ip);
+    // packet_info.dest_ip = ntohl(ip_header->dest_ip);
+    packet_info.src_ip = fast_ntohl(ip_header->src_ip);
+    packet_info.dest_ip = fast_ntohl(ip_header->dest_ip);
     packet_info.ip_protocol = ip_header->protocol;
     
     // Calculate IP header length
@@ -237,10 +252,14 @@ inline bool PcapParser::parse_tcp_packet(const uint8_t* data, size_t data_size, 
     const auto* tcp_header = reinterpret_cast<const TcpHeader*>(data);
     
     packet_info.has_transport = true;
-    packet_info.src_port = ntohs(tcp_header->src_port);
-    packet_info.dest_port = ntohs(tcp_header->dest_port);
-    packet_info.tcp_seq = ntohl(tcp_header->seq_num);
-    packet_info.tcp_ack = ntohl(tcp_header->ack_num);
+    // packet_info.src_port = ntohs(tcp_header->src_port);
+    // packet_info.dest_port = ntohs(tcp_header->dest_port);
+    // packet_info.tcp_seq = ntohl(tcp_header->seq_num);
+    // packet_info.tcp_ack = ntohl(tcp_header->ack_num);
+    packet_info.src_port = fast_ntohs(tcp_header->src_port);
+    packet_info.dest_port = fast_ntohs(tcp_header->dest_port);
+    packet_info.tcp_seq = fast_ntohl(tcp_header->seq_num);
+    packet_info.tcp_ack = fast_ntohl(tcp_header->ack_num);
     packet_info.tcp_flags = tcp_header->flags;
     
     // Calculate TCP header length and extract payload
@@ -261,8 +280,11 @@ inline bool PcapParser::parse_udp_packet(const uint8_t* data, size_t data_size, 
     const auto* udp_header = reinterpret_cast<const UdpHeader*>(data);
     
     packet_info.has_transport = true;
-    packet_info.src_port = ntohs(udp_header->src_port);
-    packet_info.dest_port = ntohs(udp_header->dest_port);
+    // packet_info.src_port = ntohs(udp_header->src_port);
+    // packet_info.dest_port = ntohs(udp_header->dest_port);
+    packet_info.src_port = fast_ntohs(udp_header->src_port);
+    packet_info.dest_port = fast_ntohs(udp_header->dest_port);
+
     
     // Extract UDP payload
     if (data_size > sizeof(UdpHeader)) {

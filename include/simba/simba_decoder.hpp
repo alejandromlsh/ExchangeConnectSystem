@@ -127,11 +127,11 @@ private:
         const uint16_t block_length = header->block_length;
 
         // Debug output for template ID discovery
-        static std::set<uint16_t> seen_templates;
-        if (seen_templates.insert(template_id).second && seen_templates.size() <= 10) {
-            std::cout << "Found SIMBA template ID: " << template_id
-                     << " (block_length: " << block_length << ")" << std::endl;
-        }
+        // static std::set<uint16_t> seen_templates;
+        // if (seen_templates.insert(template_id).second && seen_templates.size() <= 10) {
+        //     std::cout << "Found SIMBA template ID: " << template_id
+        //              << " (block_length: " << block_length << ")" << std::endl;
+        // }
 
         // Skip SBE header
         const uint8_t* payload_data = data + sizeof(SimbaMessageHeader);
