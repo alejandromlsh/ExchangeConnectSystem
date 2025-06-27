@@ -1,15 +1,12 @@
 #pragma once
-
 #include "memory_mapper.hpp"
 #include "types.hpp"
-
-#include <iostream>
-#include <functional>
 #include <chrono>
-#include <string>
-#include <array>
+#include <functional>
 #include <arpa/inet.h>
-#include <netinet/in.h>
+#include <iostream>
+#include <iomanip>
+#include <cstring>
 
 namespace pcap {
 
@@ -22,32 +19,27 @@ private:
     ParseStats stats_;
     std::chrono::high_resolution_clock::time_point start_time_;
     
-    // Callback for packet processing
+    // Optional callback for packet processing
     std::function<void(const PacketInfo&)> packet_callback_;
 
 public:
     explicit PcapParser(const std::string& filename);
     
-    // Set callback for packet processing
+    // Set callback for packet processing (optional)
     void set_packet_callback(std::function<void(const PacketInfo&)> callback) {
         packet_callback_ = std::move(callback);
     }
     
-    // Parse all packets
+    // High-performance parsing methods
     bool parse_all();
-    
-    // Parse next packet
     bool parse_next_packet(PacketInfo& packet_info);
     
-    // Get parsing statistics
+    // Statistics and utility methods
     const ParseStats& get_stats() const { return stats_; }
-    
-    // Check if more data available
     bool has_more_data() const { return current_offset_ < mapper_.size(); }
-    
-    // Reset parser to beginning
     void reset();
     
+    // Static utility methods
     static std::string ip_to_string(uint32_t ip);
     static std::string mac_to_string(const std::array<uint8_t, 6>& mac);
 
@@ -57,50 +49,38 @@ private:
     bool parse_ip_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
     bool parse_tcp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
     bool parse_udp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
-    // Utility methods
 };
 
 // Implementation
-inline PcapParser::PcapParser(const std::string& filename)
-    : mapper_(filename), current_offset_(0), header_validated_(false), is_nanosecond_format_(false) {
+inline PcapParser::PcapParser(const std::string& filename) 
+    : mapper_(filename), current_offset_(0), header_validated_(false), 
+      is_nanosecond_format_(false) {
     start_time_ = std::chrono::high_resolution_clock::now();
+    
+    // Optimize for sequential reading
+    mapper_.advise_sequential();
 }
 
 inline bool PcapParser::parse_all() {
-#ifdef DEBUG
-    std::cout << "File size: " << mapper_.size() << " bytes" << std::endl;
-#endif
-    
     if (!validate_pcap_header()) {
-#ifdef DEBUG
-        std::cerr << "Failed to validate PCAP header" << std::endl;
-#endif
         return false;
     }
     
-#ifdef DEBUG
-    std::cout << "PCAP header validated successfully" << std::endl;
-#endif
-    
+    // High-performance parsing loop - reuse PacketInfo object
     PacketInfo packet_info;
     while (has_more_data()) {
         if (parse_next_packet(packet_info)) {
+            // Direct callback execution - no branching overhead
             if (packet_callback_) {
                 packet_callback_(packet_info);
             }
         } else {
-#ifdef DEBUG
-            // Add debug output for parsing failures
-            std::cerr << "Failed to parse packet at offset: " << current_offset_ << std::endl;
-#endif
             break;
         }
     }
     
-    // Calculate parsing time
     auto end_time = std::chrono::high_resolution_clock::now();
     stats_.parse_time_ms = std::chrono::duration<double, std::milli>(end_time - start_time_).count();
-    
     return true;
 }
 
@@ -109,12 +89,10 @@ inline bool PcapParser::parse_next_packet(PacketInfo& packet_info) {
         return false;
     }
     
-    // Check if we have enough data for packet header
     if (current_offset_ + sizeof(PcapPacketHeader) > mapper_.size()) {
         return false;
     }
     
-    // Zero-copy read of packet header
     const auto* pkt_header = mapper_.read_at<PcapPacketHeader>(current_offset_);
     if (!pkt_header) {
         stats_.parse_errors++;
@@ -123,13 +101,11 @@ inline bool PcapParser::parse_next_packet(PacketInfo& packet_info) {
     
     current_offset_ += sizeof(PcapPacketHeader);
     
-    // Validate packet data size
     if (current_offset_ + pkt_header->caplen > mapper_.size()) {
         stats_.parse_errors++;
         return false;
     }
     
-    // Parse the packet
     bool success = parse_ethernet_packet(*pkt_header, packet_info);
     if (success) {
         stats_.total_packets++;
@@ -153,28 +129,15 @@ inline bool PcapParser::validate_pcap_header() {
         return false;
     }
     
-    // Check magic number for both microsecond and nanosecond formats
     uint32_t magic = header->magic_number;
-    
-    // Standard microsecond PCAP formats
     bool is_microsecond = (magic == 0xA1B2C3D4 || magic == 0xD4C3B2A1);
-    // Nanosecond PCAP formats
     bool is_nanosecond = (magic == 0xA1B23C4D || magic == 0x4D3CB2A1);
     
     if (!is_microsecond && !is_nanosecond) {
-#ifdef DEBUG
-        std::cerr << "Invalid PCAP magic number: 0x" << std::hex << magic << std::dec << std::endl;
-#endif
         return false;
     }
     
-    // Store whether this is nanosecond format for timestamp conversion
     is_nanosecond_format_ = is_nanosecond;
-    
-#ifdef DEBUG
-    std::cout << "PCAP format detected: " << (is_nanosecond ? "nanosecond" : "microsecond") << std::endl;
-#endif
-    
     current_offset_ = sizeof(PcapFileHeader);
     header_validated_ = true;
     return true;
@@ -183,23 +146,21 @@ inline bool PcapParser::validate_pcap_header() {
 inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header, PacketInfo& packet_info) {
     size_t packet_start = current_offset_;
     
-    // Initialize packet info
+    // Reset packet info for reuse
     packet_info = {};
     
     // Handle timestamp conversion based on format
     if (is_nanosecond_format_) {
-        // For nanosecond format, ts_usec field actually contains nanoseconds
-        packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL +
-                                   (pkt_header.ts_usec / 1000); // Convert nanoseconds to microseconds
+        packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL + 
+                                  (pkt_header.ts_usec / 1000);
     } else {
-        // Standard microsecond format
         packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL + pkt_header.ts_usec;
     }
     
     packet_info.packet_length = pkt_header.len;
     packet_info.captured_length = pkt_header.caplen;
     
-    // Zero-copy read of Ethernet header
+    // Zero-copy Ethernet header access
     const auto* eth_header = mapper_.read_at<EthernetHeader>(current_offset_);
     if (!eth_header) {
         current_offset_ = packet_start + pkt_header.caplen;
@@ -209,15 +170,16 @@ inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header
     current_offset_ += sizeof(EthernetHeader);
     stats_.ethernet_packets++;
     
-    // Copy MAC addresses and ethertype
+    // Extract Ethernet information
     packet_info.src_mac = eth_header->src_mac;
     packet_info.dest_mac = eth_header->dest_mac;
     packet_info.ethertype = ntohs(eth_header->ethertype);
     
-    // Check if it's an IP packet
+    // Parse IP layer if present
     if (packet_info.ethertype == 0x0800) { // IPv4
         size_t remaining_size = packet_start + pkt_header.caplen - current_offset_;
         const uint8_t* ip_data = mapper_.data() + current_offset_;
+        
         if (parse_ip_packet(ip_data, remaining_size, packet_info)) {
             stats_.ip_packets++;
         }
@@ -281,7 +243,7 @@ inline bool PcapParser::parse_tcp_packet(const uint8_t* data, size_t data_size, 
     packet_info.tcp_ack = ntohl(tcp_header->ack_num);
     packet_info.tcp_flags = tcp_header->flags;
     
-    // Calculate TCP header length
+    // Calculate TCP header length and extract payload
     uint8_t tcp_header_len = (tcp_header->data_offset >> 4) * 4;
     if (tcp_header_len >= 20 && tcp_header_len <= data_size) {
         packet_info.payload = data + tcp_header_len;
@@ -302,7 +264,7 @@ inline bool PcapParser::parse_udp_packet(const uint8_t* data, size_t data_size, 
     packet_info.src_port = ntohs(udp_header->src_port);
     packet_info.dest_port = ntohs(udp_header->dest_port);
     
-    // UDP payload
+    // Extract UDP payload
     if (data_size > sizeof(UdpHeader)) {
         packet_info.payload = data + sizeof(UdpHeader);
         packet_info.payload_size = data_size - sizeof(UdpHeader);
@@ -317,7 +279,21 @@ inline void PcapParser::reset() {
     start_time_ = std::chrono::high_resolution_clock::now();
 }
 
-// Helper method implementations
+inline std::string PcapParser::ip_to_string(uint32_t ip) {
+    return std::to_string((ip >> 24) & 0xFF) + "." +
+           std::to_string((ip >> 16) & 0xFF) + "." +
+           std::to_string((ip >> 8) & 0xFF) + "." +
+           std::to_string(ip & 0xFF);
+}
+
+inline std::string PcapParser::mac_to_string(const std::array<uint8_t, 6>& mac) {
+    char buffer[18];
+    snprintf(buffer, sizeof(buffer), "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return std::string(buffer);
+}
+
+// Helper method implementations for PacketInfo
 inline std::string PacketInfo::src_ip_str() const {
     return PcapParser::ip_to_string(src_ip);
 }
@@ -332,20 +308,6 @@ inline std::string PacketInfo::src_mac_str() const {
 
 inline std::string PacketInfo::dest_mac_str() const {
     return PcapParser::mac_to_string(dest_mac);
-}
-
-inline std::string PcapParser::ip_to_string(uint32_t ip) {
-    return std::to_string((ip >> 24) & 0xFF) + "." +
-           std::to_string((ip >> 16) & 0xFF) + "." +
-           std::to_string((ip >> 8) & 0xFF) + "." +
-           std::to_string(ip & 0xFF);
-}
-
-inline std::string PcapParser::mac_to_string(const std::array<uint8_t, 6>& mac) {
-    char buffer[18];
-    snprintf(buffer, sizeof(buffer), "%02x:%02x:%02x:%02x:%02x:%02x",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    return std::string(buffer);
 }
 
 } // namespace pcap

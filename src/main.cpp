@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <chrono>
 
+
 #ifdef DEBUG
 void print_packet_info(const pcap::PacketInfo& packet) {
     std::cout << "Packet: " << std::fixed << std::setprecision(6)
@@ -33,7 +34,7 @@ void print_packet_info(const pcap::PacketInfo& packet) {
 int main(int argc, char* argv[]) {
     if (argc != 2) {
         std::cerr << "Usage: " << argv[0] << " <pcap_file>\n";
-        std::cerr << "Example: " << argv[0] << " 2023-10-09.1849-1906.pcap\n";
+        std::cerr << "Example: " << argv[0] << " ../pcap_files/2023-10-10.0845-0905.pcap\n";
         return 1;
     }
     
