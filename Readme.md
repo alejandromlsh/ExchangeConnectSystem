@@ -257,17 +257,57 @@ For the test task demonstration, implement sequentially first for correctness, t
 
 
 
-# First fully working pipeline from deding to writing the file
+# First fully working pipeline from parsing, to decoding to writing the in the file
 
 Without lock free queue, without unified queue messafe, without memory pool allocation and without disruptor
 
-== CLEAN 3-THREAD PIPELINE STATISTICS ===
+== COMPLETE PIPELINE PERFORMANCE STATISTICS ===
 Total packets: 4294773
 Processed packets: 4294773
 Decoded messages: 288
 JSON messages written: 288
 Decode errors: 4294485
 JSON write errors: 0
-Parse time: 1086.87 ms
-Throughput: 3.95152e+06 packets/sec
-Decoding rate: 264.982 messages/sec
+
+=== TIMING BREAKDOWN ===
+Parsing time: 1263.62 ms
+Decoding + JSON writing time: 184.03 ms
+Total pipeline time: 1447.65 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 3.39879e+06 packets/sec
+Complete pipeline throughput: 2.96672e+06 packets/sec
+End-to-end decoding rate: 198.943 messages/sec
+JSON writing rate: 198.943 messages/sec
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 0.00670583%
+Pipeline efficiency: 87.2875% (parsing vs total time)
+
+Performance is pretty bad
+
+# Replacing queue with locks with a lock free ring buffer.
+
+=== LOCK-FREE PIPELINE PERFORMANCE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4283059
+Decoded messages: 288
+JSON messages written: 288
+Decode errors: 4282771
+JSON write errors: 0
+Dropped packets (backpressure): 11714
+
+=== TIMING BREAKDOWN ===
+Parsing time: 595.948 ms
+Decoding + JSON writing time: 6.13251 ms
+Total pipeline time: 602.081 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 7.20663e+06 packets/sec
+Complete pipeline throughput: 7.13321e+06 packets/sec
+End-to-end decoding rate: 478.341 messages/sec
+JSON writing rate: 478.341 messages/sec
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 0.00672417%
+Pipeline efficiency: 98.9813% (parsing vs total time)

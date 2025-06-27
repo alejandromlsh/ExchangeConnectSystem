@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../pcap/types.hpp"
-#include "../utils/thread_safe_queue.hpp"
+#include "../utils/ring_buffer.hpp"
 #include "simba_types.hpp"
 #include <atomic>
 #include <thread>
@@ -11,13 +11,13 @@
 
 namespace simba {
 
-// High-performance SIMBA decoder with separate queues for each message type
+// High-performance SIMBA decoder with separate ring buffers for each message type
 class SimbaDecoder {
 private:
-    pcap::ThreadSafeQueue<pcap::PacketInfo>& input_queue_;
-    pcap::ThreadSafeQueue<OrderUpdate>& order_update_queue_;
-    pcap::ThreadSafeQueue<OrderExecution>& order_execution_queue_;
-    pcap::ThreadSafeQueue<OrderBookSnapshot>& snapshot_queue_;
+    pcap::HFTRingBuffer<pcap::PacketInfo, 65536>& input_queue_;
+    pcap::HFTRingBuffer<simba::OrderUpdate, 65536>& order_update_queue_;
+    pcap::HFTRingBuffer<simba::OrderExecution, 65536>& order_execution_queue_;
+    pcap::HFTRingBuffer<simba::OrderBookSnapshot, 65536>& snapshot_queue_;
     std::atomic<bool>& parsing_complete_;
     std::atomic<bool> should_stop_;
     
@@ -27,10 +27,10 @@ private:
     alignas(64) std::atomic<uint64_t> decode_errors_;
 
 public:
-    explicit SimbaDecoder(pcap::ThreadSafeQueue<pcap::PacketInfo>& input_queue,
-                         pcap::ThreadSafeQueue<OrderUpdate>& order_update_queue,
-                         pcap::ThreadSafeQueue<OrderExecution>& order_execution_queue,
-                         pcap::ThreadSafeQueue<OrderBookSnapshot>& snapshot_queue,
+    explicit SimbaDecoder(pcap::HFTRingBuffer<pcap::PacketInfo, 65536>& input_queue,
+                         pcap::HFTRingBuffer<simba::OrderUpdate, 65536>& order_update_queue,
+                         pcap::HFTRingBuffer<simba::OrderExecution, 65536>& order_execution_queue,
+                         pcap::HFTRingBuffer<simba::OrderBookSnapshot, 65536>& snapshot_queue,
                          std::atomic<bool>& parsing_complete) noexcept
         : input_queue_(input_queue), 
           order_update_queue_(order_update_queue),
@@ -49,7 +49,7 @@ public:
         should_stop_.store(true, std::memory_order_release); 
     }
 
-    // Main processing loop - optimized for minimal latency
+    // Main processing loop - optimized for minimal latency with lock-free ring buffers
     void run() noexcept {
         constexpr auto sleep_duration = std::chrono::microseconds(1);
         
@@ -57,9 +57,9 @@ public:
                (!parsing_complete_.load(std::memory_order_acquire) || 
                 !input_queue_.empty())) {
             
-            auto packet_opt = input_queue_.try_pop();
-            if (packet_opt) [[likely]] {
-                process_packet(*packet_opt);
+            pcap::PacketInfo packet;
+            if (input_queue_.try_pop(packet)) [[likely]] {
+                process_packet(packet);
                 processed_packets_.fetch_add(1, std::memory_order_relaxed);
             } else [[unlikely]] {
                 std::this_thread::sleep_for(sleep_duration);
@@ -102,7 +102,7 @@ private:
         }
     }
 
-    // Zero-copy message decoding with direct type-specific queues
+    // Zero-copy message decoding with direct type-specific ring buffers
     [[nodiscard]] bool decode_simba_message(const pcap::PacketInfo& packet) noexcept {
         const uint8_t* data = packet.payload;
         const size_t remaining = packet.payload_size;
@@ -141,36 +141,45 @@ private:
             return false;
         }
 
-        // Direct decode to specific types - no union overhead
+        // Direct decode to specific types - no union overhead, lock-free push
         switch (template_id) {
-            case 3: case 4: case 5: {  // OrderUpdate variants
+            case 3: case 4: case 5: { // OrderUpdate variants
                 OrderUpdate msg;
                 if (decode_order_update(payload_data, packet, msg)) {
-                    order_update_queue_.push(std::move(msg));
+                    if (!order_update_queue_.try_push(std::move(msg))) {
+                        // Handle backpressure - message dropped
+                        return false;
+                    }
                     return true;
                 }
                 break;
             }
-            case 6: {  // OrderExecution  
+            case 6: { // OrderExecution  
                 OrderExecution msg;
                 if (decode_order_execution(payload_data, packet, msg)) {
-                    order_execution_queue_.push(std::move(msg));
+                    if (!order_execution_queue_.try_push(std::move(msg))) {
+                        return false;
+                    }
                     return true;
                 }
                 break;
             }
-            case 7: {  // OrderBookSnapshot
+            case 7: { // OrderBookSnapshot
                 OrderBookSnapshot msg;
                 if (decode_order_book_snapshot(payload_data, packet, msg)) {
-                    snapshot_queue_.push(std::move(msg));
+                    if (!snapshot_queue_.try_push(std::move(msg))) {
+                        return false;
+                    }
                     return true;
                 }
                 break;
             }
-            case 8: case 9: case 11: case 16: {  // Other execution types
+            case 8: case 9: case 11: case 16: { // Other execution types
                 OrderExecution msg;
                 if (decode_order_execution(payload_data, packet, msg)) {
-                    order_execution_queue_.push(std::move(msg));
+                    if (!order_execution_queue_.try_push(std::move(msg))) {
+                        return false;
+                    }
                     return true;
                 }
                 break;
