@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../simba/simba_types.hpp"
-#include "../utils/thread_safe_queue.hpp"
+#include "../utils/ring_buffer.hpp"
 #include <fstream>
 #include <string>
 #include <atomic>
@@ -11,12 +11,12 @@
 
 namespace output {
 
-// JSON writer that handles all three message types
+// JSON writer that handles all three message types with lock-free ring buffers
 class JsonOutputWriter {
 private:
-    pcap::ThreadSafeQueue<simba::OrderUpdate>& order_update_queue_;
-    pcap::ThreadSafeQueue<simba::OrderExecution>& order_execution_queue_;
-    pcap::ThreadSafeQueue<simba::OrderBookSnapshot>& snapshot_queue_;
+    pcap::HFTRingBuffer<simba::OrderUpdate, 65536>& order_update_queue_;
+    pcap::HFTRingBuffer<simba::OrderExecution, 65536>& order_execution_queue_;
+    pcap::HFTRingBuffer<simba::OrderBookSnapshot, 65536>& snapshot_queue_;
     std::atomic<bool>& decoding_complete_;
     std::atomic<bool> should_stop_;
     
@@ -29,9 +29,9 @@ private:
     bool first_message_;
 
 public:
-    explicit JsonOutputWriter(pcap::ThreadSafeQueue<simba::OrderUpdate>& order_update_queue,
-                             pcap::ThreadSafeQueue<simba::OrderExecution>& order_execution_queue,
-                             pcap::ThreadSafeQueue<simba::OrderBookSnapshot>& snapshot_queue,
+    explicit JsonOutputWriter(pcap::HFTRingBuffer<simba::OrderUpdate, 65536>& order_update_queue,
+                             pcap::HFTRingBuffer<simba::OrderExecution, 65536>& order_execution_queue,
+                             pcap::HFTRingBuffer<simba::OrderBookSnapshot, 65536>& snapshot_queue,
                              std::atomic<bool>& decoding_complete,
                              const std::string& output_filename)
         : order_update_queue_(order_update_queue),
@@ -71,26 +71,26 @@ public:
             
             bool processed_any = false;
             
-            // Process OrderUpdate messages
-            auto order_update_opt = order_update_queue_.try_pop();
-            if (order_update_opt) {
-                serialize_order_update(*order_update_opt);
+            // Process OrderUpdate messages with lock-free ring buffer
+            simba::OrderUpdate order_update;
+            if (order_update_queue_.try_pop(order_update)) {
+                serialize_order_update(order_update);
                 messages_written_.fetch_add(1, std::memory_order_relaxed);
                 processed_any = true;
             }
             
             // Process OrderExecution messages
-            auto order_execution_opt = order_execution_queue_.try_pop();
-            if (order_execution_opt) {
-                serialize_order_execution(*order_execution_opt);
+            simba::OrderExecution order_execution;
+            if (order_execution_queue_.try_pop(order_execution)) {
+                serialize_order_execution(order_execution);
                 messages_written_.fetch_add(1, std::memory_order_relaxed);
                 processed_any = true;
             }
             
             // Process OrderBookSnapshot messages
-            auto snapshot_opt = snapshot_queue_.try_pop();
-            if (snapshot_opt) {
-                serialize_order_book_snapshot(*snapshot_opt);
+            simba::OrderBookSnapshot snapshot;
+            if (snapshot_queue_.try_pop(snapshot)) {
+                serialize_order_book_snapshot(snapshot);
                 messages_written_.fetch_add(1, std::memory_order_relaxed);
                 processed_any = true;
             }

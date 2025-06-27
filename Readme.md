@@ -245,3 +245,193 @@ Yes, there's significant opportunity for multithreading, especially given:
 The tasks are logically sequential (you need parsed packets before decoding SIMBA), but architecturally parallel (multiple packets can be processed simultaneously through a pipeline).
 
 For the test task demonstration, implement sequentially first for correctness, then add multithreading as a performance optimization to showcase your concurrent programming expertise.
+
+
+
+
+
+
+
+
+
+
+
+
+# First fully working pipeline from parsing, to decoding to writing the in the file
+
+Without lock free queue, without unified queue messafe, without memory pool allocation and without disruptor
+
+== COMPLETE PIPELINE PERFORMANCE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4294773
+Decoded messages: 288
+JSON messages written: 288
+Decode errors: 4294485
+JSON write errors: 0
+
+=== TIMING BREAKDOWN ===
+Parsing time: 1263.62 ms
+Decoding + JSON writing time: 184.03 ms
+Total pipeline time: 1447.65 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 3.39879e+06 packets/sec
+Complete pipeline throughput: 2.96672e+06 packets/sec
+End-to-end decoding rate: 198.943 messages/sec
+JSON writing rate: 198.943 messages/sec
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 0.00670583%
+Pipeline efficiency: 87.2875% (parsing vs total time)
+
+Performance is pretty bad
+
+# Replacing queue with locks with a lock free ring buffer.
+
+=== LOCK-FREE PIPELINE PERFORMANCE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4283059
+Decoded messages: 288
+JSON messages written: 288
+Decode errors: 4282771
+JSON write errors: 0
+Dropped packets (backpressure): 11714
+
+=== TIMING BREAKDOWN ===
+Parsing time: 595.948 ms
+Decoding + JSON writing time: 6.13251 ms
+Total pipeline time: 602.081 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 7.20663e+06 packets/sec
+Complete pipeline throughput: 7.13321e+06 packets/sec
+End-to-end decoding rate: 478.341 messages/sec
+JSON writing rate: 478.341 messages/sec
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 0.00672417%
+Pipeline efficiency: 98.9813% (parsing vs total time)
+
+# After deleting one debug message from the decoder
+
+=== LOCK-FREE PIPELINE PERFORMANCE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4294773
+Decoded messages: 288
+JSON messages written: 288
+Decode errors: 4294485
+JSON write errors: 0
+Dropped packets (backpressure): 0
+
+=== TIMING BREAKDOWN ===
+Parsing time: 394.292 ms
+Decoding + JSON writing time: 0.178934 ms
+Total pipeline time: 394.472 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 1.08924e+07 packets/sec
+Complete pipeline throughput: 1.08874e+07 packets/sec
+End-to-end decoding rate: 730.089 messages/sec
+JSON writing rate: 730.089 messages/sec
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 0.00670583%
+Pipeline efficiency: 99.9543% (parsing vs total time)
+
+# Improving cache efficiency moving from alignas(32) to alignas(64)
+
+(base) alejandro@alejandro-Aura-15-Gen1:~/workspace/eqlivent_task/build$ ./pcap_pipeline ../pcap_files/2023-10-10.0845-0905.pcap example.json
+Starting lock-free 3-thread PCAP→SIMBA→JSON pipeline...
+SIMBA decoder thread started...JSON writer thread started...
+
+SIMBA decoder thread finished.
+JSON writer thread finished.
+
+=== LOCK-FREE PIPELINE PERFORMANCE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4294773
+Decoded messages: 288
+JSON messages written: 288
+Decode errors: 4294485
+JSON write errors: 0
+Dropped packets (backpressure): 0
+
+=== TIMING BREAKDOWN ===
+Parsing time: 386.522 ms
+Decoding + JSON writing time: 0.136261 ms
+Total pipeline time: 386.659 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 1.11113e+07 packets/sec
+Complete pipeline throughput: 1.11074e+07 packets/sec
+End-to-end decoding rate: 744.843 messages/sec
+JSON writing rate: 744.843 messages/sec
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 0.00670583%
+Pipeline efficiency: 99.9645% (parsing vs total time)
+(base) alejandro@alejandro-Aura-15-Gen1:~/workspace/eqlivent_task/build$ 
+
+# Changing ntohs calls from system calls to inlining the builtin
+
+I check that each system call is around 50=100CPU cycles (from the function call to the library lookpu). 
+Since in each packet Icall 7 calls, and I have around 4 M packet that is around 2 billion cycles.
+
+With the inline optimisation we should move to 1-2CPU cucles per call. So we only have around 45 million cycles.
+
+=== LOCK-FREE PIPELINE PERFORMANCE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4294773
+Decoded messages: 288
+JSON messages written: 288
+Decode errors: 4294485
+JSON write errors: 0
+Dropped packets (backpressure): 0
+
+=== TIMING BREAKDOWN ===
+Parsing time: 367.313 ms
+Decoding + JSON writing time: 0.1364 ms
+Total pipeline time: 367.45 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 1.16924e+07 packets/sec
+Complete pipeline throughput: 1.1688e+07 packets/sec
+End-to-end decoding rate: 783.78 messages/sec
+JSON writing rate: 783.78 messages/sec
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 0.00670583%
+Pipeline efficiency: 99.9626% (parsing vs total time)
+
+# Eliminating bound checking in the memory mapper and in the pcap parser
+
+Not really critical.
+
+=== LOCK-FREE PIPELINE PERFORMANCE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4294773
+Decoded messages: 288
+JSON messages written: 288
+Decode errors: 4294485
+JSON write errors: 0
+Dropped packets (backpressure): 0
+
+=== TIMING BREAKDOWN ===
+Parsing time: 400.013 ms
+Decoding + JSON writing time: 0.194927 ms
+Total pipeline time: 400.209 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 1.07366e+07 packets/sec
+Complete pipeline throughput: 1.07313e+07 packets/sec
+End-to-end decoding rate: 719.624 messages/sec
+JSON writing rate: 719.624 messages/sec
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 0.00670583%
+Pipeline efficiency: 99.951% (parsing vs total time)
+
+# Improving the ring buffer
+
+The ring buffer suffered ABA race conditions
+

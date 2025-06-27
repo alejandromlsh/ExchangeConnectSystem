@@ -22,7 +22,7 @@ struct MarketDataPacketHeader {
 } __attribute__((packed));
 
 // Separate optimized message types - no more union waste
-struct alignas(32) OrderUpdate {
+struct alignas(64) OrderUpdate {
     // Common network fields
     uint64_t timestamp_us;
     uint32_t src_ip;
@@ -47,7 +47,7 @@ struct alignas(32) OrderUpdate {
                    price(0), order_qty(0), side(0), ord_type(0), padding2{} {}
 };
 
-struct alignas(32) OrderExecution {
+struct alignas(64) OrderExecution {
     // Common network fields
     uint64_t timestamp_us;
     uint32_t src_ip;
@@ -73,7 +73,7 @@ struct alignas(32) OrderExecution {
                       exec_id(0), last_px(0), last_qty(0), side(0), exec_type(0), padding2{} {}
 };
 
-struct alignas(32) OrderBookSnapshot {
+struct alignas(64) OrderBookSnapshot {
     // Common network fields
     uint64_t timestamp_us;
     uint32_t src_ip;

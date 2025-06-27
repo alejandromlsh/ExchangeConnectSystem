@@ -45,6 +45,13 @@ public:
         }
         return reinterpret_cast<const T*>(static_cast<const uint8_t*>(mapped_data_) + offset);
     }
+    // NEW: Unchecked access for hot path - use only after validation
+    template<typename T>
+    const T* read_at_unchecked(size_t offset) const noexcept {
+      // NO BOUNDS CHECK - assumes caller has validated
+      return reinterpret_cast<const T*>(static_cast<const uint8_t*>(mapped_data_) + offset);
+}
+
 };
 
 // Implementation
