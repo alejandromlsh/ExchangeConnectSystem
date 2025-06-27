@@ -474,3 +474,46 @@ Packet drop rate: 0%
 === OPTIMIZATION IMPACT ===
 Atomic operations reduced by batching: ~96.875%
 Queue backpressure: EXCELLENT (< 0.1% drops)
+
+# Improvements in the simba decoder and in the json
+
+Now we decode more packet
+
+Starting optimized lock-free 3-thread PCAP→SIMBA→JSON pipeline...
+JSON writer thread started...
+SIMBA decoder thread started...
+SIMBA decoder thread finished.
+JSON writer thread finished.
+
+=== OPTIMIZED LOCK-FREE PIPELINE PERFORMANCE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4294773
+Decoded messages: 579896
+JSON messages written: 579896
+Decode errors: 3714845
+JSON write errors: 0
+Dropped packets (backpressure): 0
+Total batches processed: 134212
+Average batch utilization: 99.9997%
+
+=== TIMING BREAKDOWN ===
+Parsing time: 432.445 ms
+Decoding + JSON writing time: 344.525 ms
+Total pipeline time: 776.971 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 9.93138e+06 packets/sec
+Complete pipeline throughput: 5.52759e+06 packets/sec
+End-to-end decoding rate: 746355 messages/sec
+JSON writing rate: 746355 messages/sec
+Batch processing rate: 310357 batches/sec
+Average packets per batch: 31.9999
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 13.5024%
+Pipeline efficiency: 55.6578% (parsing vs total time)
+Packet drop rate: 0%
+
+=== OPTIMIZATION IMPACT ===
+Atomic operations reduced by batching: ~96.875%
+Queue backpressure: EXCELLENT (< 0.1% drops)

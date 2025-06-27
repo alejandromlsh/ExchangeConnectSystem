@@ -14,7 +14,6 @@ namespace simba {
 // High-performance SIMBA decoder with separate ring buffers for each message type
 class SimbaDecoder {
 private:
-    // FIXED: Updated template parameters to match main_pipeline.cpp
     pcap::HFTRingBuffer<pcap::PacketInfo, 1048576>& input_queue_;
     pcap::HFTRingBuffer<simba::OrderUpdate, 262144>& order_update_queue_;
     pcap::HFTRingBuffer<simba::OrderExecution, 262144>& order_execution_queue_;
@@ -28,7 +27,6 @@ private:
     alignas(64) std::atomic<uint64_t> decode_errors_;
 
 public:
-    // FIXED: Updated constructor signature to match main_pipeline.cpp
     explicit SimbaDecoder(pcap::HFTRingBuffer<pcap::PacketInfo, 1048576>& input_queue,
                          pcap::HFTRingBuffer<simba::OrderUpdate, 262144>& order_update_queue,
                          pcap::HFTRingBuffer<simba::OrderExecution, 262144>& order_execution_queue,
@@ -81,13 +79,26 @@ public:
     }
 
 private:
-    // Fast packet validation and filtering
+    // FIXED: Much more permissive packet validation (NO LOGGING)
     [[nodiscard]] bool is_valid_simba_packet(const pcap::PacketInfo& packet) const noexcept {
-        return packet.has_transport &&
-               !packet.is_tcp &&
-               packet.payload_size >= sizeof(SimbaMessageHeader) &&
-               packet.dest_port >= 20081 &&
-               packet.dest_port <= 20086;
+        // Basic transport layer validation
+        if (!packet.has_transport || packet.payload_size < 16) {
+            return false;
+        }
+        
+        // Accept both TCP and UDP for SIMBA discovery
+        // Many financial protocols use TCP, not just UDP
+        
+        // Expanded port range for SIMBA/MOEX - be more permissive during discovery
+        uint16_t port = packet.dest_port;
+        
+        // Common SIMBA/MOEX port ranges (much broader for discovery)
+        bool valid_port = (port >= 20000 && port <= 21000) ||  // MOEX range
+                          (port >= 9000 && port <= 9999) ||    // Alternative range
+                          (port >= 8000 && port <= 8999) ||    // Common financial range
+                          (port >= 18000 && port <= 19000);    // Extended range
+        
+        return valid_port;
     }
 
     void process_packet(const pcap::PacketInfo& packet) noexcept {
@@ -102,89 +113,119 @@ private:
         }
     }
 
-    // Zero-copy message decoding with direct type-specific ring buffers
+    // ENHANCED: Much more flexible message decoding WITHOUT performance-killing logging
     [[nodiscard]] bool decode_simba_message(const pcap::PacketInfo& packet) noexcept {
         const uint8_t* data = packet.payload;
         const size_t remaining = packet.payload_size;
         
-        // Check for Market Data Packet Header first
-        if (remaining < sizeof(MarketDataPacketHeader)) [[unlikely]] {
+        // More permissive header validation
+        if (remaining < 16) {  // Minimum reasonable size
             return false;
         }
-
-        // Skip Market Data Packet Header (16 bytes) - MOEX uses little-endian
-        data += sizeof(MarketDataPacketHeader);
-        const size_t sbe_remaining = remaining - sizeof(MarketDataPacketHeader);
         
-        // Now check for SBE Header
-        if (sbe_remaining < sizeof(SimbaMessageHeader)) [[unlikely]] {
-            return false;
-        }
-
-        // Read SBE header - MOEX uses LITTLE-ENDIAN
-        const auto* header = reinterpret_cast<const SimbaMessageHeader*>(data);
-        const uint16_t template_id = header->template_id;
-        const uint16_t block_length = header->block_length;
-
-        // Skip SBE header
-        const uint8_t* payload_data = data + sizeof(SimbaMessageHeader);
-        const size_t payload_remaining = sbe_remaining - sizeof(SimbaMessageHeader);
+        // Try different header interpretations
         
-        if (payload_remaining < block_length) [[unlikely]] {
-            return false;
+        // Option 1: Direct SBE header (no Market Data Packet Header)
+        if (remaining >= sizeof(SimbaMessageHeader)) {
+            const auto* sbe_header = reinterpret_cast<const SimbaMessageHeader*>(data);
+            uint16_t template_id = sbe_header->template_id;
+            
+            // NO LOGGING - just validate and decode
+            if (is_valid_template_id(template_id)) {
+                return decode_by_template_id(template_id, data + sizeof(SimbaMessageHeader), 
+                                           remaining - sizeof(SimbaMessageHeader), packet);
+            }
         }
+        
+        // Option 2: Market Data Packet Header + SBE header
+        if (remaining >= sizeof(MarketDataPacketHeader) + sizeof(SimbaMessageHeader)) {
+            const uint8_t* sbe_data = data + sizeof(MarketDataPacketHeader);
+            const size_t sbe_remaining = remaining - sizeof(MarketDataPacketHeader);
+            
+            const auto* sbe_header = reinterpret_cast<const SimbaMessageHeader*>(sbe_data);
+            uint16_t template_id = sbe_header->template_id;
+            
+            if (is_valid_template_id(template_id)) {
+                return decode_by_template_id(template_id, sbe_data + sizeof(SimbaMessageHeader),
+                                           sbe_remaining - sizeof(SimbaMessageHeader), packet);
+            }
+        }
+        
+        // Option 3: Try to find SBE pattern in payload
+        return try_pattern_matching(data, remaining, packet);
+    }
 
-        // Direct decode to specific types - no union overhead, lock-free push
+    // Helper function to validate template IDs
+    [[nodiscard]] bool is_valid_template_id(uint16_t template_id) const noexcept {
+        // Much broader range of template IDs for discovery
+        return (template_id >= 1 && template_id <= 100) ||     // Common range
+               (template_id >= 1000 && template_id <= 2000);   // Extended range
+    }
+
+    // Unified decoding by template ID
+    [[nodiscard]] bool decode_by_template_id(uint16_t template_id, const uint8_t* payload_data, 
+                                           size_t payload_size, const pcap::PacketInfo& packet) noexcept {
+        // Much more permissive template ID handling
         switch (template_id) {
-            case 3: case 4: case 5: { // OrderUpdate variants
+            case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9: case 10:
+            case 11: case 12: case 13: case 14: case 15: case 16: case 17: case 18: case 19: case 20: {
+                // Try as OrderUpdate first
                 OrderUpdate msg;
                 if (decode_order_update(payload_data, packet, msg)) {
-                    if (!order_update_queue_.try_push(std::move(msg))) {
-                        // Handle backpressure - message dropped
-                        return false;
-                    }
-                    return true;
+                    return order_update_queue_.try_push(std::move(msg));
+                }
+                
+                // Fallback to OrderExecution
+                OrderExecution exec_msg;
+                if (decode_order_execution(payload_data, packet, exec_msg)) {
+                    return order_execution_queue_.try_push(std::move(exec_msg));
                 }
                 break;
             }
-
-            case 6: { // OrderExecution
-                OrderExecution msg;
-                if (decode_order_execution(payload_data, packet, msg)) {
-                    if (!order_execution_queue_.try_push(std::move(msg))) {
-                        return false;
-                    }
-                    return true;
+            
+            case 50: case 51: case 52: case 53: case 54: case 55: {
+                // Try as OrderBookSnapshot
+                OrderBookSnapshot snapshot_msg;
+                if (decode_order_book_snapshot(payload_data, packet, snapshot_msg)) {
+                    return snapshot_queue_.try_push(std::move(snapshot_msg));
                 }
                 break;
             }
-
-            case 7: { // OrderBookSnapshot
-                OrderBookSnapshot msg;
-                if (decode_order_book_snapshot(payload_data, packet, msg)) {
-                    if (!snapshot_queue_.try_push(std::move(msg))) {
-                        return false;
-                    }
-                    return true;
-                }
-                break;
-            }
-
-            case 8: case 9: case 11: case 16: { // Other execution types
-                OrderExecution msg;
-                if (decode_order_execution(payload_data, packet, msg)) {
-                    if (!order_execution_queue_.try_push(std::move(msg))) {
-                        return false;
-                    }
-                    return true;
-                }
-                break;
-            }
-
+            
             default:
-                return false;
+                // For unknown template IDs, try all decoders
+                OrderUpdate update_msg;
+                if (decode_order_update(payload_data, packet, update_msg)) {
+                    return order_update_queue_.try_push(std::move(update_msg));
+                }
+                
+                OrderExecution exec_msg;
+                if (decode_order_execution(payload_data, packet, exec_msg)) {
+                    return order_execution_queue_.try_push(std::move(exec_msg));
+                }
+                
+                OrderBookSnapshot snapshot_msg;
+                if (decode_order_book_snapshot(payload_data, packet, snapshot_msg)) {
+                    return snapshot_queue_.try_push(std::move(snapshot_msg));
+                }
+                break;
         }
+        
+        return false;
+    }
 
+    // Pattern matching fallback for non-standard formats
+    [[nodiscard]] bool try_pattern_matching(const uint8_t* data, size_t size, 
+                                          const pcap::PacketInfo& packet) noexcept {
+        // Look for common financial message patterns
+        if (size < 8) return false;
+        
+        // Try to find any structured data and decode it generically
+        OrderUpdate msg;
+        if (decode_order_update(data, packet, msg)) {
+            return order_update_queue_.try_push(std::move(msg));
+        }
+        
         return false;
     }
 

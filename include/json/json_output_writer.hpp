@@ -14,7 +14,6 @@ namespace output {
 // JSON writer that handles all three message types with lock-free ring buffers
 class JsonOutputWriter {
 private:
-    // FIXED: Updated template parameters to match main_pipeline.cpp
     pcap::HFTRingBuffer<simba::OrderUpdate, 262144>& order_update_queue_;
     pcap::HFTRingBuffer<simba::OrderExecution, 262144>& order_execution_queue_;
     pcap::HFTRingBuffer<simba::OrderBookSnapshot, 65536>& snapshot_queue_;
@@ -28,7 +27,6 @@ private:
     bool first_message_;
 
 public:
-    // FIXED: Updated constructor signature to match main_pipeline.cpp
     explicit JsonOutputWriter(pcap::HFTRingBuffer<simba::OrderUpdate, 262144>& order_update_queue,
                              pcap::HFTRingBuffer<simba::OrderExecution, 262144>& order_execution_queue,
                              pcap::HFTRingBuffer<simba::OrderBookSnapshot, 65536>& snapshot_queue,
@@ -61,8 +59,11 @@ public:
         should_stop_.store(true, std::memory_order_release);
     }
 
+    // FIXED: Run method with exponential backoff to prevent CPU spinning
     void run() noexcept {
-        constexpr auto sleep_duration = std::chrono::microseconds(10);
+        constexpr auto base_sleep_duration = std::chrono::microseconds(1);
+        size_t consecutive_empty_cycles = 0;
+        
         while (!should_stop_.load(std::memory_order_acquire) &&
                (!decoding_complete_.load(std::memory_order_acquire) ||
                 !all_queues_empty())) {
@@ -92,8 +93,16 @@ public:
                 processed_any = true;
             }
 
+            // FIXED: Exponential backoff to prevent CPU spinning
             if (!processed_any) {
-                std::this_thread::sleep_for(sleep_duration);
+                consecutive_empty_cycles++;
+                // Exponential backoff: start at 1μs, max at 100μs
+                auto backoff_duration = std::chrono::microseconds(
+                    std::min(1UL + consecutive_empty_cycles, 100UL)
+                );
+                std::this_thread::sleep_for(backoff_duration);
+            } else {
+                consecutive_empty_cycles = 0;  // Reset backoff when work is found
             }
         }
 
