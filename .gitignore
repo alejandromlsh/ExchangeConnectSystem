@@ -1,3 +1,4 @@
 .vscode
 pcap_files/
-architecture
+architecture/
+build/
