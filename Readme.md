@@ -245,3 +245,29 @@ Yes, there's significant opportunity for multithreading, especially given:
 The tasks are logically sequential (you need parsed packets before decoding SIMBA), but architecturally parallel (multiple packets can be processed simultaneously through a pipeline).
 
 For the test task demonstration, implement sequentially first for correctness, then add multithreading as a performance optimization to showcase your concurrent programming expertise.
+
+
+
+
+
+
+
+
+
+
+
+
+# First fully working pipeline from deding to writing the file
+
+Without lock free queue, without unified queue messafe, without memory pool allocation and without disruptor
+
+== CLEAN 3-THREAD PIPELINE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4294773
+Decoded messages: 288
+JSON messages written: 288
+Decode errors: 4294485
+JSON write errors: 0
+Parse time: 1086.87 ms
+Throughput: 3.95152e+06 packets/sec
+Decoding rate: 264.982 messages/sec
