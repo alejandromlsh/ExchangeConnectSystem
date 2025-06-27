@@ -14,10 +14,10 @@ set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -DDEBUG")
 include_directories(include)
 
 # Task 1: Original PCAP Parser
-add_executable(pcap_parser 
-    src/main.cpp
-)
-target_compile_options(pcap_parser PRIVATE -O3 -march=native -DNDEBUG -flto)
+# add_executable(pcap_parser 
+#     src/main.cpp
+# )
+# target_compile_options(pcap_parser PRIVATE -O3 -march=native -DNDEBUG -flto)
 
 # Task 1+2+3: Complete SIMBA pipeline (integrated)
 add_executable(pcap_pipeline 

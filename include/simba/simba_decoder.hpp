@@ -6,33 +6,35 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
-#include <set>
 #include <iostream>
+#include <set>
 
 namespace simba {
 
 // High-performance SIMBA decoder with separate ring buffers for each message type
 class SimbaDecoder {
 private:
-    pcap::HFTRingBuffer<pcap::PacketInfo, 65536>& input_queue_;
-    pcap::HFTRingBuffer<simba::OrderUpdate, 65536>& order_update_queue_;
-    pcap::HFTRingBuffer<simba::OrderExecution, 65536>& order_execution_queue_;
+    // FIXED: Updated template parameters to match main_pipeline.cpp
+    pcap::HFTRingBuffer<pcap::PacketInfo, 1048576>& input_queue_;
+    pcap::HFTRingBuffer<simba::OrderUpdate, 262144>& order_update_queue_;
+    pcap::HFTRingBuffer<simba::OrderExecution, 262144>& order_execution_queue_;
     pcap::HFTRingBuffer<simba::OrderBookSnapshot, 65536>& snapshot_queue_;
     std::atomic<bool>& parsing_complete_;
     std::atomic<bool> should_stop_;
-    
+
     // Performance counters - cache-aligned for optimal access
     alignas(64) std::atomic<uint64_t> processed_packets_;
     alignas(64) std::atomic<uint64_t> decoded_messages_;
     alignas(64) std::atomic<uint64_t> decode_errors_;
 
 public:
-    explicit SimbaDecoder(pcap::HFTRingBuffer<pcap::PacketInfo, 65536>& input_queue,
-                         pcap::HFTRingBuffer<simba::OrderUpdate, 65536>& order_update_queue,
-                         pcap::HFTRingBuffer<simba::OrderExecution, 65536>& order_execution_queue,
+    // FIXED: Updated constructor signature to match main_pipeline.cpp
+    explicit SimbaDecoder(pcap::HFTRingBuffer<pcap::PacketInfo, 1048576>& input_queue,
+                         pcap::HFTRingBuffer<simba::OrderUpdate, 262144>& order_update_queue,
+                         pcap::HFTRingBuffer<simba::OrderExecution, 262144>& order_execution_queue,
                          pcap::HFTRingBuffer<simba::OrderBookSnapshot, 65536>& snapshot_queue,
                          std::atomic<bool>& parsing_complete) noexcept
-        : input_queue_(input_queue), 
+        : input_queue_(input_queue),
           order_update_queue_(order_update_queue),
           order_execution_queue_(order_execution_queue),
           snapshot_queue_(snapshot_queue),
@@ -45,18 +47,16 @@ public:
     SimbaDecoder(SimbaDecoder&&) = delete;
     SimbaDecoder& operator=(SimbaDecoder&&) = delete;
 
-    void stop() noexcept { 
-        should_stop_.store(true, std::memory_order_release); 
+    void stop() noexcept {
+        should_stop_.store(true, std::memory_order_release);
     }
 
     // Main processing loop - optimized for minimal latency with lock-free ring buffers
     void run() noexcept {
         constexpr auto sleep_duration = std::chrono::microseconds(1);
-        
         while (!should_stop_.load(std::memory_order_acquire) &&
-               (!parsing_complete_.load(std::memory_order_acquire) || 
+               (!parsing_complete_.load(std::memory_order_acquire) ||
                 !input_queue_.empty())) {
-            
             pcap::PacketInfo packet;
             if (input_queue_.try_pop(packet)) [[likely]] {
                 process_packet(packet);
@@ -126,13 +126,6 @@ private:
         const uint16_t template_id = header->template_id;
         const uint16_t block_length = header->block_length;
 
-        // Debug output for template ID discovery
-        // static std::set<uint16_t> seen_templates;
-        // if (seen_templates.insert(template_id).second && seen_templates.size() <= 10) {
-        //     std::cout << "Found SIMBA template ID: " << template_id
-        //              << " (block_length: " << block_length << ")" << std::endl;
-        // }
-
         // Skip SBE header
         const uint8_t* payload_data = data + sizeof(SimbaMessageHeader);
         const size_t payload_remaining = sbe_remaining - sizeof(SimbaMessageHeader);
@@ -154,7 +147,8 @@ private:
                 }
                 break;
             }
-            case 6: { // OrderExecution  
+
+            case 6: { // OrderExecution
                 OrderExecution msg;
                 if (decode_order_execution(payload_data, packet, msg)) {
                     if (!order_execution_queue_.try_push(std::move(msg))) {
@@ -164,6 +158,7 @@ private:
                 }
                 break;
             }
+
             case 7: { // OrderBookSnapshot
                 OrderBookSnapshot msg;
                 if (decode_order_book_snapshot(payload_data, packet, msg)) {
@@ -174,6 +169,7 @@ private:
                 }
                 break;
             }
+
             case 8: case 9: case 11: case 16: { // Other execution types
                 OrderExecution msg;
                 if (decode_order_execution(payload_data, packet, msg)) {
@@ -184,9 +180,11 @@ private:
                 }
                 break;
             }
+
             default:
                 return false;
         }
+
         return false;
     }
 
@@ -198,7 +196,7 @@ private:
         msg.dest_ip = packet.dest_ip;
         msg.src_port = packet.src_port;
         msg.dest_port = packet.dest_port;
-        
+
         // For now, zero-initialize SIMBA fields (you'll implement proper SBE parsing later)
         msg.msg_seq_num = 0;
         msg.sending_time = 0;
@@ -208,17 +206,17 @@ private:
         msg.order_qty = 0;
         msg.side = 0;
         msg.ord_type = 0;
-        
+
         return true;
     }
-    
+
     bool decode_order_execution(const uint8_t* data, const pcap::PacketInfo& packet, OrderExecution& msg) noexcept {
         msg.timestamp_us = packet.timestamp_us;
         msg.src_ip = packet.src_ip;
         msg.dest_ip = packet.dest_ip;
         msg.src_port = packet.src_port;
         msg.dest_port = packet.dest_port;
-        
+
         msg.msg_seq_num = 0;
         msg.sending_time = 0;
         msg.security_id = 0;
@@ -228,24 +226,24 @@ private:
         msg.last_qty = 0;
         msg.side = 0;
         msg.exec_type = 0;
-        
+
         return true;
     }
-    
+
     bool decode_order_book_snapshot(const uint8_t* data, const pcap::PacketInfo& packet, OrderBookSnapshot& msg) noexcept {
         msg.timestamp_us = packet.timestamp_us;
         msg.src_ip = packet.src_ip;
         msg.dest_ip = packet.dest_ip;
         msg.src_port = packet.src_port;
         msg.dest_port = packet.dest_port;
-        
+
         msg.msg_seq_num = 0;
         msg.sending_time = 0;
         msg.security_id = 0;
         msg.last_msg_seq_num_processed = 0;
         msg.rpt_seq = 0;
         msg.no_md_entries = 0;
-        
+
         return true;
     }
 };

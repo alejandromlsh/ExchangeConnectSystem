@@ -1,23 +1,49 @@
 #pragma once
+
 #include "memory_mapper.hpp"
 #include "types.hpp"
-#include <chrono>
 #include <functional>
-#include <arpa/inet.h>
+#include <chrono>
 #include <iostream>
-#include <iomanip>
+#include <string>
+#include <array>
 #include <cstring>
+#include <immintrin.h>  // For SIMD intrinsics
 
 namespace pcap {
 
-
-// High-performance inline byte swapping - compiles to single CPU instructions. This will replace the system calls
+// High-performance inline byte swapping - compiles to single CPU instructions
 inline uint16_t fast_ntohs(uint16_t x) noexcept {
     return __builtin_bswap16(x);
 }
 
 inline uint32_t fast_ntohl(uint32_t x) noexcept {
     return __builtin_bswap32(x);
+}
+
+// SIMD-optimized packet validation
+// pcap_parser.hpp - Replace lines 30-58
+__attribute__((always_inline))
+inline bool validate_packet_headers_simd(const uint8_t* data, size_t size) noexcept {
+    // Fast path: minimal validation for common cases
+    if (__builtin_expect(size < 14, 0)) return false;
+    
+    // Direct memory access - no SIMD overhead
+    const uint16_t* ethertype_ptr = reinterpret_cast<const uint16_t*>(data + 12);
+    uint16_t ethertype = __builtin_bswap16(*ethertype_ptr);
+    
+    // Branch prediction hint for IPv4 (most common in HFT)
+    if (__builtin_expect(ethertype == 0x0800, 1)) {
+        if (__builtin_expect(size >= 34, 1)) {
+            // Fast IPv4 version check
+            uint8_t version = (data[14] >> 4) & 0x0F;
+            return __builtin_expect(version == 4, 1);
+        }
+        return false;
+    }
+    
+    // Accept other protocols without deep validation
+    return true;
 }
 
 
@@ -33,8 +59,6 @@ private:
     
     // Optional callback for packet processing
     std::function<void(const PacketInfo&)> packet_callback_;
-
-
 
 public:
     explicit PcapParser(const std::string& filename);
@@ -63,19 +87,20 @@ private:
     bool parse_ip_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
     bool parse_tcp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
     bool parse_udp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
-
-    __attribute__((always_inline)) inline bool parse_ethernet_packet_unchecked(const PcapPacketHeader& pkt_header, PacketInfo& packet_info);  // NEW
-    __attribute__((always_inline)) inline bool parse_ip_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);      // NEW
-    __attribute__((always_inline)) inline bool parse_tcp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);     // NEW
-    __attribute__((always_inline)) inline bool parse_udp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);     // NEW
+    
+    // SIMD-optimized unchecked versions
+    __attribute__((always_inline)) bool parse_ethernet_packet_unchecked(const PcapPacketHeader& pkt_header, PacketInfo& packet_info);
+    __attribute__((always_inline)) bool parse_ip_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
+    __attribute__((always_inline)) bool parse_tcp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
+    __attribute__((always_inline)) bool parse_udp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
 };
 
 // Implementation
-inline PcapParser::PcapParser(const std::string& filename) 
-    : mapper_(filename), current_offset_(0), header_validated_(false), 
+
+inline PcapParser::PcapParser(const std::string& filename)
+    : mapper_(filename), current_offset_(0), header_validated_(false),
       is_nanosecond_format_(false) {
     start_time_ = std::chrono::high_resolution_clock::now();
-    
     // Optimize for sequential reading
     mapper_.advise_sequential();
 }
@@ -102,39 +127,6 @@ inline bool PcapParser::parse_all() {
     stats_.parse_time_ms = std::chrono::duration<double, std::milli>(end_time - start_time_).count();
     return true;
 }
-// This function was safe but a bit slower. I will replace for a faster version
-// inline bool PcapParser::parse_next_packet(PacketInfo& packet_info) {
-//     if (!header_validated_ && !validate_pcap_header()) {
-//         return false;
-//     }
-    
-//     if (current_offset_ + sizeof(PcapPacketHeader) > mapper_.size()) {
-//         return false;
-//     }
-    
-//     const auto* pkt_header = mapper_.read_at<PcapPacketHeader>(current_offset_);
-//     if (!pkt_header) {
-//         stats_.parse_errors++;
-//         return false;
-//     }
-    
-//     current_offset_ += sizeof(PcapPacketHeader);
-    
-//     if (current_offset_ + pkt_header->caplen > mapper_.size()) {
-//         stats_.parse_errors++;
-//         return false;
-//     }
-    
-//     bool success = parse_ethernet_packet(*pkt_header, packet_info);
-//     if (success) {
-//         stats_.total_packets++;
-//         stats_.total_bytes_processed += pkt_header->caplen;
-//     } else {
-//         stats_.parse_errors++;
-//     }
-    
-//     return success;
-// }
 
 inline bool PcapParser::parse_next_packet(PacketInfo& packet_info) {
     // KEEP: Header validation (essential - runs once)
@@ -157,7 +149,16 @@ inline bool PcapParser::parse_next_packet(PacketInfo& packet_info) {
         return false;
     }
     
-    // Now we KNOW the entire packet is within bounds
+    // SIMD validation of packet structure before processing
+    const uint8_t* packet_start = mapper_.data() + current_offset_;
+    if (pkt_header->caplen >= 34 && !validate_packet_headers_simd(packet_start, pkt_header->caplen)) {
+        // Skip invalid packets
+        current_offset_ += pkt_header->caplen;
+        stats_.parse_errors++;
+        return false;
+    }
+    
+    // Now we KNOW the entire packet is within bounds and structurally valid
     bool success = parse_ethernet_packet_unchecked(*pkt_header, packet_info);
     if (success) {
         stats_.total_packets++;
@@ -168,7 +169,6 @@ inline bool PcapParser::parse_next_packet(PacketInfo& packet_info) {
     
     return success;
 }
-
 
 inline bool PcapParser::validate_pcap_header() {
     if (header_validated_) return true;
@@ -204,7 +204,7 @@ inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header
     
     // Handle timestamp conversion based on format
     if (is_nanosecond_format_) {
-        packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL + 
+        packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL +
                                   (pkt_header.ts_usec / 1000);
     } else {
         packet_info.timestamp_us = static_cast<uint64_t>(pkt_header.ts_sec) * 1000000ULL + pkt_header.ts_usec;
@@ -226,7 +226,6 @@ inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header
     // Extract Ethernet information
     packet_info.src_mac = eth_header->src_mac;
     packet_info.dest_mac = eth_header->dest_mac;
-    //packet_info.ethertype = ntohs(eth_header->ethertype);
     packet_info.ethertype = fast_ntohs(eth_header->ethertype);
     
     // Parse IP layer if present
@@ -244,7 +243,8 @@ inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header
     return true;
 }
 
-__attribute__((always_inline)) inline bool PcapParser::parse_ethernet_packet_unchecked(const PcapPacketHeader& pkt_header, PacketInfo& packet_info) {
+__attribute__((always_inline))
+inline bool PcapParser::parse_ethernet_packet_unchecked(const PcapPacketHeader& pkt_header, PacketInfo& packet_info) {
     size_t packet_start = current_offset_;
     
     // Reset packet info for reuse
@@ -287,7 +287,6 @@ __attribute__((always_inline)) inline bool PcapParser::parse_ethernet_packet_unc
     return true;
 }
 
-
 inline bool PcapParser::parse_ip_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
     if (data_size < sizeof(IPv4Header)) {
         return false;
@@ -297,8 +296,6 @@ inline bool PcapParser::parse_ip_packet(const uint8_t* data, size_t data_size, P
     
     // Extract IP information
     packet_info.has_ip = true;
-    // packet_info.src_ip = ntohl(ip_header->src_ip);
-    // packet_info.dest_ip = ntohl(ip_header->dest_ip);
     packet_info.src_ip = fast_ntohl(ip_header->src_ip);
     packet_info.dest_ip = fast_ntohl(ip_header->dest_ip);
     packet_info.ip_protocol = ip_header->protocol;
@@ -329,7 +326,8 @@ inline bool PcapParser::parse_ip_packet(const uint8_t* data, size_t data_size, P
     return true;
 }
 
-__attribute__((always_inline)) inline bool PcapParser::parse_ip_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
+__attribute__((always_inline))
+inline bool PcapParser::parse_ip_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
     // OPTIMIZED: Skip size check - caller guarantees valid data
     const auto* ip_header = reinterpret_cast<const IPv4Header*>(data);
     
@@ -362,7 +360,6 @@ __attribute__((always_inline)) inline bool PcapParser::parse_ip_packet_unchecked
     return true;
 }
 
-
 inline bool PcapParser::parse_tcp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
     if (data_size < sizeof(TcpHeader)) {
         return false;
@@ -371,10 +368,6 @@ inline bool PcapParser::parse_tcp_packet(const uint8_t* data, size_t data_size, 
     const auto* tcp_header = reinterpret_cast<const TcpHeader*>(data);
     
     packet_info.has_transport = true;
-    // packet_info.src_port = ntohs(tcp_header->src_port);
-    // packet_info.dest_port = ntohs(tcp_header->dest_port);
-    // packet_info.tcp_seq = ntohl(tcp_header->seq_num);
-    // packet_info.tcp_ack = ntohl(tcp_header->ack_num);
     packet_info.src_port = fast_ntohs(tcp_header->src_port);
     packet_info.dest_port = fast_ntohs(tcp_header->dest_port);
     packet_info.tcp_seq = fast_ntohl(tcp_header->seq_num);
@@ -391,7 +384,8 @@ inline bool PcapParser::parse_tcp_packet(const uint8_t* data, size_t data_size, 
     return true;
 }
 
-__attribute__((always_inline)) inline bool PcapParser::parse_tcp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
+__attribute__((always_inline))
+inline bool PcapParser::parse_tcp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
     // OPTIMIZED: Skip size check - caller guarantees valid data
     const auto* tcp_header = reinterpret_cast<const TcpHeader*>(data);
     
@@ -420,11 +414,8 @@ inline bool PcapParser::parse_udp_packet(const uint8_t* data, size_t data_size, 
     const auto* udp_header = reinterpret_cast<const UdpHeader*>(data);
     
     packet_info.has_transport = true;
-    // packet_info.src_port = ntohs(udp_header->src_port);
-    // packet_info.dest_port = ntohs(udp_header->dest_port);
     packet_info.src_port = fast_ntohs(udp_header->src_port);
     packet_info.dest_port = fast_ntohs(udp_header->dest_port);
-
     
     // Extract UDP payload
     if (data_size > sizeof(UdpHeader)) {
@@ -435,7 +426,8 @@ inline bool PcapParser::parse_udp_packet(const uint8_t* data, size_t data_size, 
     return true;
 }
 
-__attribute__((always_inline)) inline bool PcapParser::parse_udp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
+__attribute__((always_inline))
+inline bool PcapParser::parse_udp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
     // OPTIMIZED: Skip size check - caller guarantees valid data
     const auto* udp_header = reinterpret_cast<const UdpHeader*>(data);
     
@@ -451,7 +443,6 @@ __attribute__((always_inline)) inline bool PcapParser::parse_udp_packet_unchecke
     
     return true;
 }
-
 
 inline void PcapParser::reset() {
     current_offset_ = sizeof(PcapFileHeader);

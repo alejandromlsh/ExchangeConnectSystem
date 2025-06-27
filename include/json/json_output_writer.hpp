@@ -3,34 +3,34 @@
 #include "../simba/simba_types.hpp"
 #include "../utils/ring_buffer.hpp"
 #include <fstream>
-#include <string>
+#include <iostream>
 #include <atomic>
 #include <thread>
 #include <chrono>
-#include <sstream>
+#include <string>
 
 namespace output {
 
 // JSON writer that handles all three message types with lock-free ring buffers
 class JsonOutputWriter {
 private:
-    pcap::HFTRingBuffer<simba::OrderUpdate, 65536>& order_update_queue_;
-    pcap::HFTRingBuffer<simba::OrderExecution, 65536>& order_execution_queue_;
+    // FIXED: Updated template parameters to match main_pipeline.cpp
+    pcap::HFTRingBuffer<simba::OrderUpdate, 262144>& order_update_queue_;
+    pcap::HFTRingBuffer<simba::OrderExecution, 262144>& order_execution_queue_;
     pcap::HFTRingBuffer<simba::OrderBookSnapshot, 65536>& snapshot_queue_;
     std::atomic<bool>& decoding_complete_;
     std::atomic<bool> should_stop_;
-    
     std::ofstream output_file_;
-    
+
     // Performance counters
     alignas(64) std::atomic<uint64_t> messages_written_;
     alignas(64) std::atomic<uint64_t> write_errors_;
-    
     bool first_message_;
 
 public:
-    explicit JsonOutputWriter(pcap::HFTRingBuffer<simba::OrderUpdate, 65536>& order_update_queue,
-                             pcap::HFTRingBuffer<simba::OrderExecution, 65536>& order_execution_queue,
+    // FIXED: Updated constructor signature to match main_pipeline.cpp
+    explicit JsonOutputWriter(pcap::HFTRingBuffer<simba::OrderUpdate, 262144>& order_update_queue,
+                             pcap::HFTRingBuffer<simba::OrderExecution, 262144>& order_execution_queue,
                              pcap::HFTRingBuffer<simba::OrderBookSnapshot, 65536>& snapshot_queue,
                              std::atomic<bool>& decoding_complete,
                              const std::string& output_filename)
@@ -40,12 +40,11 @@ public:
           decoding_complete_(decoding_complete),
           should_stop_(false), messages_written_(0), write_errors_(0),
           first_message_(true) {
-        
         output_file_.open(output_filename, std::ios::out | std::ios::trunc);
         if (!output_file_.is_open()) {
             throw std::runtime_error("Failed to open output file: " + output_filename);
         }
-        
+
         // Start JSON array
         output_file_ << "[\n";
     }
@@ -58,19 +57,17 @@ public:
         }
     }
 
-    void stop() noexcept { 
-        should_stop_.store(true, std::memory_order_release); 
+    void stop() noexcept {
+        should_stop_.store(true, std::memory_order_release);
     }
 
     void run() noexcept {
         constexpr auto sleep_duration = std::chrono::microseconds(10);
-        
         while (!should_stop_.load(std::memory_order_acquire) &&
-               (!decoding_complete_.load(std::memory_order_acquire) || 
+               (!decoding_complete_.load(std::memory_order_acquire) ||
                 !all_queues_empty())) {
-            
             bool processed_any = false;
-            
+
             // Process OrderUpdate messages with lock-free ring buffer
             simba::OrderUpdate order_update;
             if (order_update_queue_.try_pop(order_update)) {
@@ -78,7 +75,7 @@ public:
                 messages_written_.fetch_add(1, std::memory_order_relaxed);
                 processed_any = true;
             }
-            
+
             // Process OrderExecution messages
             simba::OrderExecution order_execution;
             if (order_execution_queue_.try_pop(order_execution)) {
@@ -86,7 +83,7 @@ public:
                 messages_written_.fetch_add(1, std::memory_order_relaxed);
                 processed_any = true;
             }
-            
+
             // Process OrderBookSnapshot messages
             simba::OrderBookSnapshot snapshot;
             if (snapshot_queue_.try_pop(snapshot)) {
@@ -94,27 +91,27 @@ public:
                 messages_written_.fetch_add(1, std::memory_order_relaxed);
                 processed_any = true;
             }
-            
+
             if (!processed_any) {
                 std::this_thread::sleep_for(sleep_duration);
             }
         }
-        
+
         output_file_.flush();
     }
 
     [[nodiscard]] uint64_t get_messages_written() const noexcept {
         return messages_written_.load(std::memory_order_relaxed);
     }
-    
+
     [[nodiscard]] uint64_t get_write_errors() const noexcept {
         return write_errors_.load(std::memory_order_relaxed);
     }
 
 private:
     bool all_queues_empty() const noexcept {
-        return order_update_queue_.empty() && 
-               order_execution_queue_.empty() && 
+        return order_update_queue_.empty() &&
+               order_execution_queue_.empty() &&
                snapshot_queue_.empty();
     }
 
@@ -129,7 +126,6 @@ private:
     void serialize_order_update(const simba::OrderUpdate& msg) noexcept {
         try {
             write_message_header();
-            
             output_file_ << "  {\n";
             output_file_ << "    \"type\": \"OrderUpdate\",\n";
             output_file_ << "    \"timestamp_us\": " << msg.timestamp_us << ",\n";
@@ -146,16 +142,14 @@ private:
             output_file_ << "    \"side\": " << static_cast<int>(msg.side) << ",\n";
             output_file_ << "    \"ord_type\": " << static_cast<int>(msg.ord_type) << "\n";
             output_file_ << "  }";
-            
         } catch (...) {
             write_errors_.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    
+
     void serialize_order_execution(const simba::OrderExecution& msg) noexcept {
         try {
             write_message_header();
-            
             output_file_ << "  {\n";
             output_file_ << "    \"type\": \"OrderExecution\",\n";
             output_file_ << "    \"timestamp_us\": " << msg.timestamp_us << ",\n";
@@ -173,16 +167,14 @@ private:
             output_file_ << "    \"side\": " << static_cast<int>(msg.side) << ",\n";
             output_file_ << "    \"exec_type\": " << static_cast<int>(msg.exec_type) << "\n";
             output_file_ << "  }";
-            
         } catch (...) {
             write_errors_.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    
+
     void serialize_order_book_snapshot(const simba::OrderBookSnapshot& msg) noexcept {
         try {
             write_message_header();
-            
             output_file_ << "  {\n";
             output_file_ << "    \"type\": \"OrderBookSnapshot\",\n";
             output_file_ << "    \"timestamp_us\": " << msg.timestamp_us << ",\n";
@@ -197,12 +189,11 @@ private:
             output_file_ << "    \"rpt_seq\": " << msg.rpt_seq << ",\n";
             output_file_ << "    \"no_md_entries\": " << static_cast<int>(msg.no_md_entries) << "\n";
             output_file_ << "  }";
-            
         } catch (...) {
             write_errors_.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    
+
     static std::string format_ip(uint32_t ip) noexcept {
         return std::to_string((ip >> 24) & 0xFF) + "." +
                std::to_string((ip >> 16) & 0xFF) + "." +

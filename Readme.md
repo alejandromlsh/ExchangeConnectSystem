@@ -435,3 +435,42 @@ Pipeline efficiency: 99.951% (parsing vs total time)
 
 The ring buffer suffered ABA race conditions
 
+
+# Inlining deep function calls in the parser
+Some functions that call other functions. Inlining this should increse performance
+
+# SIMD + Batching packet processing 
+
+Definitely an improve in the performance, that now is barely worse than 9M packet per sec
+=== OPTIMIZED LOCK-FREE PIPELINE PERFORMANCE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4294773
+Decoded messages: 288
+JSON messages written: 288
+Decode errors: 4294485
+JSON write errors: 0
+Dropped packets (backpressure): 0
+Total batches processed: 134212
+Average batch utilization: 99.9997%
+
+=== TIMING BREAKDOWN ===
+Parsing time: 360.279 ms
+Decoding + JSON writing time: 0.219791 ms
+Total pipeline time: 360.5 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 1.19207e+07 packets/sec
+Complete pipeline throughput: 1.19134e+07 packets/sec
+End-to-end decoding rate: 798.889 messages/sec
+JSON writing rate: 798.889 messages/sec
+Batch processing rate: 372522 batches/sec
+Average packets per batch: 31.9999
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 0.00670583%
+Pipeline efficiency: 99.9386% (parsing vs total time)
+Packet drop rate: 0%
+
+=== OPTIMIZATION IMPACT ===
+Atomic operations reduced by batching: ~96.875%
+Queue backpressure: EXCELLENT (< 0.1% drops)
