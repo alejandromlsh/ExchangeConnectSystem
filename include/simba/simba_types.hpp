@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <set>
 
 namespace simba {
 
@@ -16,10 +15,10 @@ struct SimbaMessageHeader {
 
 // Market Data Packet Header - MOEX specific structure
 struct MarketDataPacketHeader {
-    uint32_t msg_seq_num;        // Packet sequence number
-    uint64_t sending_time;       // Sending time in nanoseconds
-    uint16_t msg_size;           // Message size
-    uint16_t msg_flags;          // Message flags
+    uint32_t msg_seq_num;    // Packet sequence number
+    uint64_t sending_time;   // Sending time in nanoseconds
+    uint16_t msg_size;       // Message size
+    uint16_t msg_flags;      // Message flags
 } __attribute__((packed));
 
 // Message type enumeration with explicit values for wire protocol compatibility
@@ -52,7 +51,7 @@ struct alignas(64) DecodedMessage {
             uint8_t ord_type;
             uint8_t padding[6]; // Explicit padding for alignment
         } order_update;
-        
+
         struct OrderExecution {
             uint64_t msg_seq_num;
             uint64_t sending_time;
@@ -65,7 +64,7 @@ struct alignas(64) DecodedMessage {
             uint8_t exec_type;
             uint8_t padding[6]; // Explicit padding for alignment
         } order_execution;
-        
+
         struct OrderBookSnapshot {
             uint64_t msg_seq_num;
             uint64_t sending_time;
@@ -75,14 +74,14 @@ struct alignas(64) DecodedMessage {
             uint8_t no_md_entries;
             uint8_t padding[7]; // Explicit padding for alignment
         } order_book_snapshot;
-        
-        // Constructor for proper initialization
-        MessageData() { std::memset(this, 0, sizeof(MessageData)); }
+
+        // Safe constructor - zero initialize without memset
+        MessageData() : order_update{} {}
     } data;
-    
+
     // Default constructor with proper initialization
-    DecodedMessage() : type(MessageType::UNKNOWN), timestamp_us(0), 
-                       src_ip(0), dest_ip(0), src_port(0), dest_port(0), data() {}
+    DecodedMessage() : type(MessageType::UNKNOWN), timestamp_us(0),
+                      src_ip(0), dest_ip(0), src_port(0), dest_port(0), data() {}
 };
 
 } // namespace simba
