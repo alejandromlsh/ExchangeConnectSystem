@@ -64,10 +64,10 @@ private:
     bool parse_tcp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
     bool parse_udp_packet(const uint8_t* data, size_t data_size, PacketInfo& packet_info);
 
-    bool parse_ethernet_packet_unchecked(const PcapPacketHeader& pkt_header, PacketInfo& packet_info);  // NEW
-    bool parse_ip_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);      // NEW
-    bool parse_tcp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);     // NEW
-    bool parse_udp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);     // NEW
+    __attribute__((always_inline)) inline bool parse_ethernet_packet_unchecked(const PcapPacketHeader& pkt_header, PacketInfo& packet_info);  // NEW
+    __attribute__((always_inline)) inline bool parse_ip_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);      // NEW
+    __attribute__((always_inline)) inline bool parse_tcp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);     // NEW
+    __attribute__((always_inline)) inline bool parse_udp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info);     // NEW
 };
 
 // Implementation
@@ -244,7 +244,7 @@ inline bool PcapParser::parse_ethernet_packet(const PcapPacketHeader& pkt_header
     return true;
 }
 
-inline bool PcapParser::parse_ethernet_packet_unchecked(const PcapPacketHeader& pkt_header, PacketInfo& packet_info) {
+__attribute__((always_inline)) inline bool PcapParser::parse_ethernet_packet_unchecked(const PcapPacketHeader& pkt_header, PacketInfo& packet_info) {
     size_t packet_start = current_offset_;
     
     // Reset packet info for reuse
@@ -329,7 +329,7 @@ inline bool PcapParser::parse_ip_packet(const uint8_t* data, size_t data_size, P
     return true;
 }
 
-inline bool PcapParser::parse_ip_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
+__attribute__((always_inline)) inline bool PcapParser::parse_ip_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
     // OPTIMIZED: Skip size check - caller guarantees valid data
     const auto* ip_header = reinterpret_cast<const IPv4Header*>(data);
     
@@ -391,7 +391,7 @@ inline bool PcapParser::parse_tcp_packet(const uint8_t* data, size_t data_size, 
     return true;
 }
 
-inline bool PcapParser::parse_tcp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
+__attribute__((always_inline)) inline bool PcapParser::parse_tcp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
     // OPTIMIZED: Skip size check - caller guarantees valid data
     const auto* tcp_header = reinterpret_cast<const TcpHeader*>(data);
     
@@ -435,7 +435,7 @@ inline bool PcapParser::parse_udp_packet(const uint8_t* data, size_t data_size, 
     return true;
 }
 
-inline bool PcapParser::parse_udp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
+__attribute__((always_inline)) inline bool PcapParser::parse_udp_packet_unchecked(const uint8_t* data, size_t data_size, PacketInfo& packet_info) {
     // OPTIMIZED: Skip size check - caller guarantees valid data
     const auto* udp_header = reinterpret_cast<const UdpHeader*>(data);
     
