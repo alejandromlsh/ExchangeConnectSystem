@@ -402,3 +402,36 @@ JSON writing rate: 783.78 messages/sec
 === EFFICIENCY METRICS ===
 Decode success rate: 0.00670583%
 Pipeline efficiency: 99.9626% (parsing vs total time)
+
+# Eliminating bound checking in the memory mapper and in the pcap parser
+
+Not really critical.
+
+=== LOCK-FREE PIPELINE PERFORMANCE STATISTICS ===
+Total packets: 4294773
+Processed packets: 4294773
+Decoded messages: 288
+JSON messages written: 288
+Decode errors: 4294485
+JSON write errors: 0
+Dropped packets (backpressure): 0
+
+=== TIMING BREAKDOWN ===
+Parsing time: 400.013 ms
+Decoding + JSON writing time: 0.194927 ms
+Total pipeline time: 400.209 ms
+
+=== THROUGHPUT METRICS ===
+Parsing throughput: 1.07366e+07 packets/sec
+Complete pipeline throughput: 1.07313e+07 packets/sec
+End-to-end decoding rate: 719.624 messages/sec
+JSON writing rate: 719.624 messages/sec
+
+=== EFFICIENCY METRICS ===
+Decode success rate: 0.00670583%
+Pipeline efficiency: 99.951% (parsing vs total time)
+
+# Improving the ring buffer
+
+The ring buffer suffered ABA race conditions
+

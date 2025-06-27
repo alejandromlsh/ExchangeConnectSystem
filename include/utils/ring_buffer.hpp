@@ -22,45 +22,66 @@ private:
     static constexpr size_t mask_ = Size - 1;
 
 public:
-    // Non-blocking push - returns false if full (HFT prefers dropping to blocking)
+    // FIXED: Non-blocking push with compare_exchange to avoid race condition
     [[nodiscard]] bool try_push(T&& item) noexcept {
-        const size_t head = head_.load(std::memory_order_relaxed);
-        const size_t next_head = (head + 1) & mask_;
+        size_t head = head_.load(std::memory_order_relaxed);
         
-        if (next_head == tail_.load(std::memory_order_acquire)) [[unlikely]] {
-            return false; // Queue full - don't block in HFT
+        while (true) {
+            const size_t next_head = (head + 1) & mask_;
+            
+            if (next_head == tail_.load(std::memory_order_acquire)) [[unlikely]] {
+                return false; // Queue full
+            }
+            
+            // FIXED: Use compare_exchange to avoid ABA race condition
+            if (head_.compare_exchange_weak(head, next_head, 
+                                           std::memory_order_release, 
+                                           std::memory_order_relaxed)) {
+                buffer_[head] = std::move(item);
+                return true;
+            }
+            // head was updated by compare_exchange_weak, retry with new value
         }
-        
-        buffer_[head] = std::move(item);
-        head_.store(next_head, std::memory_order_release);
-        return true;
     }
     
     // Overload for copy semantics
     [[nodiscard]] bool try_push(const T& item) noexcept {
-        const size_t head = head_.load(std::memory_order_relaxed);
-        const size_t next_head = (head + 1) & mask_;
+        size_t head = head_.load(std::memory_order_relaxed);
         
-        if (next_head == tail_.load(std::memory_order_acquire)) [[unlikely]] {
-            return false;
+        while (true) {
+            const size_t next_head = (head + 1) & mask_;
+            
+            if (next_head == tail_.load(std::memory_order_acquire)) [[unlikely]] {
+                return false;
+            }
+            
+            if (head_.compare_exchange_weak(head, next_head, 
+                                           std::memory_order_release, 
+                                           std::memory_order_relaxed)) {
+                buffer_[head] = item;
+                return true;
+            }
         }
-        
-        buffer_[head] = item;
-        head_.store(next_head, std::memory_order_release);
-        return true;
     }
     
-    // Non-blocking pop - returns false if empty
+    // FIXED: Non-blocking pop with compare_exchange to avoid race condition
     [[nodiscard]] bool try_pop(T& item) noexcept {
-        const size_t tail = tail_.load(std::memory_order_relaxed);
+        size_t tail = tail_.load(std::memory_order_relaxed);
         
-        if (tail == head_.load(std::memory_order_acquire)) [[unlikely]] {
-            return false; // Queue empty
+        while (true) {
+            if (tail == head_.load(std::memory_order_acquire)) [[unlikely]] {
+                return false; // Queue empty
+            }
+            
+            const size_t next_tail = (tail + 1) & mask_;
+            
+            if (tail_.compare_exchange_weak(tail, next_tail, 
+                                           std::memory_order_release, 
+                                           std::memory_order_relaxed)) {
+                item = std::move(buffer_[tail]);
+                return true;
+            }
         }
-        
-        item = std::move(buffer_[tail]);
-        tail_.store((tail + 1) & mask_, std::memory_order_release);
-        return true;
     }
     
     [[nodiscard]] bool empty() const noexcept {
