@@ -9,6 +9,42 @@
 #include <memory>
 #include <array>
 
+#include <sched.h>
+#include <pthread.h>
+#include <unistd.h>
+
+
+void pin_thread_to_core(int core_id) {
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    CPU_SET(core_id, &cpuset);
+    
+    int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    if (rc != 0) {
+        std::cerr << "Error setting thread affinity to core " << core_id 
+                  << ": " << strerror(rc) << std::endl;
+    } else {
+        std::cout << "Thread pinned to core " << core_id << std::endl;
+    }
+}
+
+void set_thread_priority() {
+    struct sched_param params;
+    params.sched_priority = sched_get_priority_max(SCHED_FIFO);
+    
+    int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &params);
+    if (rc != 0) {
+        std::cerr << "Error setting thread priority: " << strerror(rc) << std::endl;
+    } else {
+        std::cout << "Thread set to real-time priority " << params.sched_priority << std::endl;
+    }
+}
+
+void optimize_thread_for_hft(int core_id) {
+    pin_thread_to_core(core_id);
+    set_thread_priority();
+}
+
 int main(int argc, char* argv[]) {
     if (argc != 3) {
         std::cerr << "Usage: " << argv[0] << " <pcap_file> <output_json>\n";
@@ -39,6 +75,8 @@ int main(int argc, char* argv[]) {
         output::JsonOutputWriter json_writer(*order_update_queue, *order_execution_queue,
                                            *snapshot_queue, decoding_complete, argv[2]);
 
+        
+        optimize_thread_for_hft(0);
         // UPDATED: Batched packet callback with optimized ring buffer operations
         parser.set_packet_callback([&](const pcap::PacketInfo& packet) {
             packet_batch[batch_count++] = packet;
@@ -54,21 +92,23 @@ int main(int argc, char* argv[]) {
 
         // THREAD 2: SIMBA Decoder (Queue 1 → Queue 2a/2b/2c)
         std::thread decoder_thread([&decoder, &decoding_complete]() {
-            std::cout << "SIMBA decoder thread started..." << std::endl;
+            // std::cout << "SIMBA decoder thread started..." << std::endl;
+            optimize_thread_for_hft(1); 
             decoder.run();
             decoding_complete.store(true, std::memory_order_release);
-            std::cout << "SIMBA decoder thread finished." << std::endl;
+            // std::cout << "SIMBA decoder thread finished." << std::endl;
         });
 
         // THREAD 3: JSON Writer (Queue 2a/2b/2c → File)
         std::thread json_writer_thread([&json_writer]() {
-            std::cout << "JSON writer thread started..." << std::endl;
+            // std::cout << "JSON writer thread started..." << std::endl;
+            optimize_thread_for_hft(2);
             json_writer.run();
-            std::cout << "JSON writer thread finished." << std::endl;
+            // std::cout << "JSON writer thread finished." << std::endl;
         });
 
         // Start complete pipeline timing
-        std::cout << "Starting optimized lock-free 3-thread PCAP→SIMBA→JSON pipeline..." << std::endl;
+        // std::cout << "Starting optimized lock-free 3-thread PCAP→SIMBA→JSON pipeline..." << std::endl;
         auto pipeline_start_time = std::chrono::high_resolution_clock::now();
 
         // Start parsing (Thread 1 - main thread)
