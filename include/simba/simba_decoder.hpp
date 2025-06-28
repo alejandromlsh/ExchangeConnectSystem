@@ -79,7 +79,7 @@ public:
     }
 
 private:
-    // FIXED: Much more permissive packet validation (NO LOGGING)
+    // FIXED: Much more permissive packet validation
     [[nodiscard]] bool is_valid_simba_packet(const pcap::PacketInfo& packet) const noexcept {
         // Basic transport layer validation
         if (!packet.has_transport || packet.payload_size < 16) {
@@ -87,8 +87,6 @@ private:
         }
         
         // Accept both TCP and UDP for SIMBA discovery
-        // Many financial protocols use TCP, not just UDP
-        
         // Expanded port range for SIMBA/MOEX - be more permissive during discovery
         uint16_t port = packet.dest_port;
         
@@ -113,7 +111,7 @@ private:
         }
     }
 
-    // ENHANCED: Much more flexible message decoding WITHOUT performance-killing logging
+    // ENHANCED: Much more flexible message decoding
     [[nodiscard]] bool decode_simba_message(const pcap::PacketInfo& packet) noexcept {
         const uint8_t* data = packet.payload;
         const size_t remaining = packet.payload_size;
@@ -130,7 +128,6 @@ private:
             const auto* sbe_header = reinterpret_cast<const SimbaMessageHeader*>(data);
             uint16_t template_id = sbe_header->template_id;
             
-            // NO LOGGING - just validate and decode
             if (is_valid_template_id(template_id)) {
                 return decode_by_template_id(template_id, data + sizeof(SimbaMessageHeader), 
                                            remaining - sizeof(SimbaMessageHeader), packet);
@@ -157,61 +154,90 @@ private:
 
     // Helper function to validate template IDs
     [[nodiscard]] bool is_valid_template_id(uint16_t template_id) const noexcept {
-        // Much broader range of template IDs for discovery
+        // Based on SIMBA SPECTRA specification and your discovered template IDs
         return (template_id >= 1 && template_id <= 100) ||     // Common range
                (template_id >= 1000 && template_id <= 2000);   // Extended range
     }
 
-    // Unified decoding by template ID
+    // FIXED: Proper template ID mapping based on SIMBA SPECTRA specification
     [[nodiscard]] bool decode_by_template_id(uint16_t template_id, const uint8_t* payload_data, 
                                            size_t payload_size, const pcap::PacketInfo& packet) noexcept {
-        // Much more permissive template ID handling
+        // Based on SIMBA SPECTRA specification and your discovered template IDs
         switch (template_id) {
-            case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9: case 10:
-            case 11: case 12: case 13: case 14: case 15: case 16: case 17: case 18: case 19: case 20: {
-                // Try as OrderUpdate first
+            // OrderUpdate types (SIMBA SPECTRA: msg id=15, and your discovered range)
+            case 15:  // SIMBA SPECTRA OrderUpdate
+            case 5:   // MOEX ASTS OrderUpdate  
+            case 92: case 93: case 94: case 95: case 96: case 97: case 98: {
                 OrderUpdate msg;
                 if (decode_order_update(payload_data, packet, msg)) {
                     return order_update_queue_.try_push(std::move(msg));
                 }
-                
-                // Fallback to OrderExecution
-                OrderExecution exec_msg;
-                if (decode_order_execution(payload_data, packet, exec_msg)) {
-                    return order_execution_queue_.try_push(std::move(exec_msg));
-                }
-                break;
+                return false;
             }
             
-            case 50: case 51: case 52: case 53: case 54: case 55: {
-                // Try as OrderBookSnapshot
-                OrderBookSnapshot snapshot_msg;
-                if (decode_order_book_snapshot(payload_data, packet, snapshot_msg)) {
-                    return snapshot_queue_.try_push(std::move(snapshot_msg));
+            // OrderExecution types (SIMBA SPECTRA: msg id=16, MOEX ASTS: msg id=6)
+            case 16:  // SIMBA SPECTRA OrderExecution/Trade
+            case 6:   // MOEX ASTS OrderExecution
+            case 99: case 100: {
+                OrderExecution msg;
+                if (decode_order_execution(payload_data, packet, msg)) {
+                    return order_execution_queue_.try_push(std::move(msg));
                 }
-                break;
+                return false;
+            }
+            
+            // OrderBookSnapshot types (SIMBA SPECTRA: msg id=17, MOEX ASTS: msg id=7)
+            case 17:  // SIMBA SPECTRA OrderBookSnapshot
+            case 7:   // MOEX ASTS OrderBookSnapshot
+            case 101: {
+                OrderBookSnapshot msg;
+                if (decode_order_book_snapshot(payload_data, packet, msg)) {
+                    return snapshot_queue_.try_push(std::move(msg));
+                }
+                return false;
+            }
+            
+            // BestPrices (treat as OrderUpdate for now)
+            case 14:  // SIMBA SPECTRA BestPrices
+            case 3:   // MOEX ASTS BestPrices
+            {
+                OrderUpdate msg;
+                if (decode_order_update(payload_data, packet, msg)) {
+                    return order_update_queue_.try_push(std::move(msg));
+                }
+                return false;
+            }
+            
+            // EmptyBook (treat as OrderUpdate for now)
+            case 4: {  // EmptyBook (both SIMBA SPECTRA and MOEX ASTS)
+                OrderUpdate msg;
+                if (decode_order_update(payload_data, packet, msg)) {
+                    return order_update_queue_.try_push(std::move(msg));
+                }
+                return false;
+            }
+            
+            // Session level messages (treat as OrderUpdate for now)
+            case 1:    // Heartbeat
+            case 2:    // SequenceReset
+            case 8:    // SecurityDefinition
+            case 9:    // SecurityStatus
+            case 11:   // TradingSessionStatus
+            case 1000: // Logon
+            case 1001: // Logout
+            case 1002: // MarketDataRequest
+            {
+                OrderUpdate msg;
+                if (decode_order_update(payload_data, packet, msg)) {
+                    return order_update_queue_.try_push(std::move(msg));
+                }
+                return false;
             }
             
             default:
-                // For unknown template IDs, try all decoders
-                OrderUpdate update_msg;
-                if (decode_order_update(payload_data, packet, update_msg)) {
-                    return order_update_queue_.try_push(std::move(update_msg));
-                }
-                
-                OrderExecution exec_msg;
-                if (decode_order_execution(payload_data, packet, exec_msg)) {
-                    return order_execution_queue_.try_push(std::move(exec_msg));
-                }
-                
-                OrderBookSnapshot snapshot_msg;
-                if (decode_order_book_snapshot(payload_data, packet, snapshot_msg)) {
-                    return snapshot_queue_.try_push(std::move(snapshot_msg));
-                }
-                break;
+                // For unknown template IDs, reject instead of forcing to OrderUpdate
+                return false;
         }
-        
-        return false;
     }
 
     // Pattern matching fallback for non-standard formats
@@ -220,7 +246,7 @@ private:
         // Look for common financial message patterns
         if (size < 8) return false;
         
-        // Try to find any structured data and decode it generically
+        // Try to find any structured data and decode it generically as OrderUpdate
         OrderUpdate msg;
         if (decode_order_update(data, packet, msg)) {
             return order_update_queue_.try_push(std::move(msg));
@@ -229,8 +255,13 @@ private:
         return false;
     }
 
-    // Type-specific decoders - highly optimized, no branching
+    // FIXED: Type-specific decoders with proper validation
     bool decode_order_update(const uint8_t* data, const pcap::PacketInfo& packet, OrderUpdate& msg) noexcept {
+        // Basic validation - check if we have enough data
+        if (!data || packet.payload_size < 16) {
+            return false;  // NOW CAN FAIL
+        }
+        
         // Set common network fields
         msg.timestamp_us = packet.timestamp_us;
         msg.src_ip = packet.src_ip;
@@ -238,7 +269,7 @@ private:
         msg.src_port = packet.src_port;
         msg.dest_port = packet.dest_port;
 
-        // For now, zero-initialize SIMBA fields (you'll implement proper SBE parsing later)
+        // Zero-initialize SIMBA fields (proper SBE parsing can be added later)
         msg.msg_seq_num = 0;
         msg.sending_time = 0;
         msg.security_id = 0;
@@ -252,6 +283,11 @@ private:
     }
 
     bool decode_order_execution(const uint8_t* data, const pcap::PacketInfo& packet, OrderExecution& msg) noexcept {
+        // Basic validation
+        if (!data || packet.payload_size < 16) {
+            return false;  // NOW CAN FAIL
+        }
+        
         msg.timestamp_us = packet.timestamp_us;
         msg.src_ip = packet.src_ip;
         msg.dest_ip = packet.dest_ip;
@@ -272,6 +308,11 @@ private:
     }
 
     bool decode_order_book_snapshot(const uint8_t* data, const pcap::PacketInfo& packet, OrderBookSnapshot& msg) noexcept {
+        // Basic validation
+        if (!data || packet.payload_size < 16) {
+            return false;  // NOW CAN FAIL
+        }
+        
         msg.timestamp_us = packet.timestamp_us;
         msg.src_ip = packet.src_ip;
         msg.dest_ip = packet.dest_ip;
